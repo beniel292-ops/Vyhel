@@ -27,6 +27,13 @@ export default async function AdminCategories({ searchParams }: { searchParams: 
             </tr>
           </thead>
           <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <Td colSpan={5} className="py-8 text-center text-sm text-muted">
+                  No categories yet. Create your first one with the form — product forms list them for you to choose.
+                </Td>
+              </tr>
+            ) : null}
             {rows.map(({ category: c, productCount }) => (
               <tr key={c.id} className={c.id === edit ? "bg-accent-soft/40" : "hover:bg-canvas/60"}>
                 <Td className="tabular-nums">{c.sortOrder}</Td>

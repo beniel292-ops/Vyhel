@@ -314,6 +314,20 @@ async function main() {
     const affSlug = `e2e-affiliate-${runId}`;
     const [cat] = await sql`select id from categories order by sort_order limit 1`;
     let affId = "";
+    await step("affiliate product with an unknown or malformed category is rejected server-side", async () => {
+      for (const categoryId of ["00000000-0000-4000-8000-000000000000", "not-a-uuid"]) {
+        const { res, data } = await api("/api/affiliate-products", {
+          method: "POST",
+          auth: true,
+          json: { name: `E2E Bad Category ${runId}`, slug: `${affSlug}-badcat`, categoryId, affiliateUrl: "https://www.amazon.in/dp/B0E2ETEST0?tag=vyhel-21", status: "draft" },
+        });
+        assert.equal(res.status, 400, JSON.stringify(data));
+        assert.ok(data.errors?.categoryId, "expected a categoryId field error");
+      }
+      const [row] = await sql`select count(*)::int n from products where slug = ${`${affSlug}-badcat`}`;
+      assert.equal(row.n, 0);
+    });
+
     await step("admin creates an affiliate product through its own API", async () => {
       const { res, data } = await api("/api/affiliate-products", {
         method: "POST",
@@ -322,6 +336,8 @@ async function main() {
       });
       assert.equal(res.status, 201, JSON.stringify(data));
       affId = data.product.id;
+      const [saved] = await sql`select category_id from products where id = ${affId}`;
+      assert.equal(saved.category_id, cat.id, "category saved on the product");
     });
 
     await step("affiliate product is public with an external merchant link", async () => {

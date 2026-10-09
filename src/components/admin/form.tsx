@@ -332,7 +332,12 @@ export function Modal({
       {trigger(open)}
       <dialog
         ref={ref}
-        onClose={() => setMounted(false)}
+        // React re-dispatches a nested <dialog>'s "close" event to every ancestor's onClose, so a dialog
+        // opened inside this one (e.g. the media library inside "Add affiliate product") would also
+        // close this one. Only react to our own dialog closing.
+        onClose={(e) => {
+          if (e.target === e.currentTarget) setMounted(false);
+        }}
         onClick={(e) => e.target === e.currentTarget && close()}
         className={cn(
           "m-auto w-[calc(100%-2rem)] rounded-xl border border-line bg-canvas p-0 text-ink shadow-2xl backdrop:bg-ink/35",

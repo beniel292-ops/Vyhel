@@ -5,6 +5,7 @@ import { inspectAffiliateLink } from "@/lib/amazon";
 import { audit } from "@/lib/audit";
 import type { SessionUser } from "@/lib/auth/session";
 import { slugify } from "@/lib/utils";
+import { categoryExists } from "./categories";
 
 /**
  * AFFILIATE PRODUCTS service — products Vyhel only recommends. The purchase happens on the
@@ -192,6 +193,7 @@ async function primaryLinkUrl(productId: string) {
 
 export async function createAffiliateProduct(user: SessionUser, input: AffiliateProductInput) {
   const { errors, p, link } = validate(input, false);
+  if (p.categoryId && !errors.categoryId && !(await categoryExists(p.categoryId))) errors.categoryId = "Unknown category.";
   if (p.status === "published") {
     if (!link.specialLink) errors.affiliateUrl = "An affiliate URL is required to publish.";
     if (!p.categoryId) errors.categoryId = "Choose a category before publishing.";
@@ -214,6 +216,7 @@ export async function updateAffiliateProduct(user: SessionUser, id: string, inpu
   const [existing] = await db.select().from(products).where(eq(products.id, id));
   if (!existing) throw new AffiliateProductError("Affiliate product not found.", {}, 404);
   const { errors, p, link } = validate(input, true);
+  if (p.categoryId && !errors.categoryId && !(await categoryExists(p.categoryId))) errors.categoryId = "Unknown category.";
   if (p.slug && p.slug !== existing.slug) {
     const [clash] = await db.select({ id: products.id }).from(products).where(and(eq(products.slug, p.slug), ne(products.id, id)));
     if (clash) errors.slug = "Already in use.";

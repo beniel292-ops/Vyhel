@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { AdminForm, Checkbox, FormSection, PublishBar, SelectField, SubmitButton, TextArea, TextField } from "@/components/admin/form";
-import { FaqEditor, ImageField, MultiPicker, ScoreFields, SlugPair, SpecialLinkField } from "@/components/admin/pickers";
+import { CategoryField, FaqEditor, ImageField, MultiPicker, ScoreFields, SlugPair, SpecialLinkField } from "@/components/admin/pickers";
 import type { AffiliateLink, Product } from "@/db/schema";
 import { saveProduct } from "@/server/actions/products";
 import type { PickerOptions } from "@/server/queries/admin";
@@ -64,14 +64,7 @@ export function ProductForm({
           <FormSection id="basics" title="Product basics">
             <SlugPair nameLabel="Name" nameField="name" defaultName={p?.name} defaultSlug={p?.slug} prefix="/products/" locked={p?.status === "published"} />
             <div className="grid gap-4 sm:grid-cols-3">
-              <SelectField
-                label="Category"
-                name="categoryId"
-                required
-                placeholder="Choose…"
-                defaultValue={p?.categoryId ?? ""}
-                options={options.categories.map((c) => ({ value: c.id, label: c.name }))}
-              />
+              <CategoryField categories={options.categories} defaultValue={p?.categoryId} required />
               <TextField label="Subcategory" name="subcategory" defaultValue={p?.subcategory ?? ""} placeholder="e.g. Desk accessories" />
               <TextField label="Brand" name="brand" defaultValue={p?.brand ?? ""} />
             </div>

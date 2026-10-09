@@ -3,8 +3,8 @@
 import { Button } from "@/components/ui/Button";
 import { PlusIcon } from "@/components/ui/icons";
 import { quickAddProduct } from "@/server/actions/products";
-import { AdminForm, Modal, SelectField, SubmitButton, TextArea, TextField } from "./form";
-import { ImageField, SpecialLinkField } from "./pickers";
+import { AdminForm, Modal, SubmitButton, TextArea, TextField } from "./form";
+import { CategoryField, ImageField, SpecialLinkField } from "./pickers";
 
 /** The fastest path for adding an affiliate product (target: under two minutes). */
 export function QuickAddProduct({
@@ -34,13 +34,7 @@ export function QuickAddProduct({
         <AdminForm action={quickAddProduct} className="grid gap-5">
           <div className="grid gap-4 sm:grid-cols-2">
             <TextField label="Product name" name="name" required autoFocus placeholder="e.g. Adjustable Laptop Stand" />
-            <SelectField
-              label="Category"
-              name="categoryId"
-              required
-              placeholder="Choose…"
-              options={categories.map((c) => ({ value: c.id, label: c.name }))}
-            />
+            <CategoryField categories={categories} required />
           </div>
           <SpecialLinkField associateId={associateId} required />
           <TextArea label="Description" name="shortDescription" rows={2} placeholder="One sentence: what it does and who it's for." />

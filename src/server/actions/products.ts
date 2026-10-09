@@ -22,6 +22,7 @@ import {
   validUrl,
   type ActionState,
 } from "./utils";
+import { categoryExists } from "@/server/services/categories";
 
 const { products, affiliateLinks, collectionProducts, guideProducts, productRelations } = schema;
 const BADGES = schema.productBadge.enumValues;
@@ -107,6 +108,7 @@ export async function saveProduct(_prev: ActionState, fd: FormData): Promise<Act
     }
     const status: Status = intent === "publish" ? "published" : intent === "draft" ? "draft" : intent === "archive" ? "archived" : current;
 
+    if (categoryId && !(await categoryExists(categoryId))) errors.categoryId = "That category no longer exists — choose another.";
     if (status === "published") {
       if (!categoryId) errors.categoryId = "Choose a category before publishing.";
       if (!specialLink) errors.specialLink = "Paste the Amazon Special Link before publishing.";
@@ -239,6 +241,7 @@ export async function quickAddProduct(_prev: ActionState, fd: FormData): Promise
     const imageSource = opt(fd, "imageSource");
     if (!name) errors.name = "Required.";
     if (!categoryId) errors.categoryId = "Required.";
+    else if (!(await categoryExists(categoryId))) errors.categoryId = "That category no longer exists — choose another.";
     const check = inspectAffiliateLink(specialLink, settings.amazonAssociateId || null);
     if (!specialLink) errors.specialLink = "Required.";
     else if (!check.ok) errors.specialLink = check.errors[0];
@@ -262,7 +265,7 @@ export async function quickAddProduct(_prev: ActionState, fd: FormData): Promise
           asin: check.asin,
           imageUrl,
           imageSource,
-          imageAlt: imageUrl ? name : null,
+          imageAlt: imageUrl ? (opt(fd, "imageAlt") ?? name) : null,
           status: publish ? "published" : "draft",
           publishedAt: publish ? new Date() : null,
           createdBy: user.id,

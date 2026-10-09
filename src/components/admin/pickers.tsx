@@ -2,11 +2,132 @@
 
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/Button";
+import Link from "next/link";
 import { inspectAffiliateLink } from "@/lib/amazon";
+import { createCategoryInline } from "@/server/actions/categories";
 import { cn } from "@/lib/utils";
 import { Field, Modal, TextField, useFieldError } from "./form";
 
 type MediaOption = { id: string; url: string; alt: string; source: string; filename: string };
+
+type CategoryOption = { id: string; name: string };
+
+/**
+ * Category select for product forms. Lists the real categories from the database, explains when
+ * there are none, and lets an admin/editor create one by name without leaving (or submitting) the form.
+ * The server re-checks that the submitted id is a real category.
+ */
+export function CategoryField({
+  categories,
+  defaultValue,
+  required,
+  label = "Category",
+  name = "categoryId",
+}: {
+  categories: CategoryOption[];
+  defaultValue?: string | null;
+  required?: boolean;
+  label?: string;
+  name?: string;
+}) {
+  const [options, setOptions] = useState(categories);
+  const [value, setValue] = useState(defaultValue ?? "");
+  const [adding, setAdding] = useState(categories.length === 0);
+  const [newName, setNewName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const empty = options.length === 0;
+
+  async function create() {
+    const n = newName.trim();
+    if (!n || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await createCategoryInline(n);
+      if (!r.ok) {
+        setError(r.message);
+        return;
+      }
+      setOptions((o) => (o.some((c) => c.id === r.category.id) ? o : [...o, r.category].sort((a, b) => a.name.localeCompare(b.name))));
+      setValue(r.category.id);
+      setNewName("");
+      setAdding(false);
+    } catch {
+      setError(navigator.onLine === false ? "You're offline — reconnect and try again." : "Couldn't create the category. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Field
+      label={label}
+      name={name}
+      required={required}
+      hint={empty ? undefined : <>Manage the list in <Link href="/admin/categories" target="_blank" className="underline">Categories</Link>.</>}
+    >
+      {(id, invalid) => (
+        <div className="grid gap-2">
+          <select
+            id={id}
+            name={name}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            disabled={empty}
+            aria-invalid={invalid || undefined}
+            className={cn("input", invalid && "!border-danger")}
+          >
+            <option value="">{empty ? "No categories yet" : "Choose…"}</option>
+            {options.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+          {adding ? (
+            <div className="flex gap-2">
+              {/* No `name`: this lives inside the product form and must not be submitted with it. */}
+              <input
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void create();
+                  }
+                }}
+                placeholder={empty ? "Create your first category, e.g. Tech" : "New category name"}
+                aria-label="New category name"
+                maxLength={80}
+                className="input min-w-0 flex-1"
+              />
+              <Button variant="secondary" onClick={() => void create()} disabled={busy || !newName.trim()} className="shrink-0">
+                {busy ? "Adding…" : "Add"}
+              </Button>
+              {!empty ? (
+                <Button variant="ghost" onClick={() => setAdding(false)} className="shrink-0">
+                  Cancel
+                </Button>
+              ) : null}
+            </div>
+          ) : (
+            <button type="button" onClick={() => setAdding(true)} className="justify-self-start text-xs text-ink-soft underline hover:text-ink">
+              + New category
+            </button>
+          )}
+          {error ? (
+            <p role="alert" className="text-xs text-danger">
+              {error}
+            </p>
+          ) : empty ? (
+            <p className="text-xs text-muted">No categories exist yet. Type a name and press Add — it&rsquo;s saved straight away and selected here.</p>
+          ) : null}
+        </div>
+      )}
+    </Field>
+  );
+}
 
 /**
  * Image field: choose from the media library (preferred — every item has a recorded source)
@@ -37,12 +158,14 @@ export function ImageField({
   const [library, setLibrary] = useState(media);
   const [q, setQ] = useState("");
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const [sourceFromLibrary, setSourceFromLibrary] = useState(false);
   const filtered = library.filter((m) => !q || `${m.filename} ${m.alt}`.toLowerCase().includes(q.toLowerCase()));
 
   const choose = (m: MediaOption) => {
     setUrl(m.url);
     if (!alt) setAlt(m.alt);
     setSource(m.source);
+    setSourceFromLibrary(Boolean(m.source));
   };
 
   return (
@@ -132,9 +255,17 @@ export function ImageField({
               label="Image source / rights"
               name={sourceName}
               value={source}
-              onChange={(e) => setSource(e.target.value)}
+              onChange={(e) => {
+                setSource(e.target.value);
+                setSourceFromLibrary(false);
+              }}
               placeholder="e.g. Vyhel original photo"
               required={Boolean(url)}
+              hint={
+                sourceFromLibrary
+                  ? "Copied from this image's media-library record. Check it covers using the image on this product."
+                  : "Who owns it and why Vyhel may use it (your photo, licence, or permitted Amazon asset)."
+              }
             />
           ) : null}
         </div>

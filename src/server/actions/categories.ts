@@ -46,6 +46,32 @@ export async function saveCategory(_prev: ActionState, fd: FormData): Promise<Ac
   }
 }
 
+/**
+ * Create a category by name from inside another form (e.g. Add affiliate product), without leaving it.
+ * Same rules as saveCategory: signed-in admin/editor, valid unique slug, audited.
+ */
+export async function createCategoryInline(rawName: string): Promise<
+  { ok: true; category: { id: string; name: string } } | { ok: false; message: string }
+> {
+  try {
+    const user = await assertUser();
+    const name = String(rawName ?? "").trim().slice(0, 80);
+    if (!name) return { ok: false, message: "Type a category name." };
+    const slug = slugify(name);
+    if (!SLUG_RE.test(slug)) return { ok: false, message: "Use letters or numbers in the name." };
+    const db = getDb();
+    const [existing] = await db.select({ id: categories.id, name: categories.name }).from(categories).where(eq(categories.slug, slug));
+    if (existing) return { ok: true, category: existing }; // already there — just select it
+    const [row] = await db.insert(categories).values({ name, slug, updatedAt: new Date() }).returning({ id: categories.id, name: categories.name });
+    await audit(user, "category", row.id, "create", `${name} (inline)`);
+    revalidatePublic();
+    return { ok: true, category: row };
+  } catch (err) {
+    const r = handleError(err);
+    return { ok: false, message: r.message ?? "Couldn't create the category." };
+  }
+}
+
 export async function deleteCategory(fd: FormData) {
   const user = await assertUser("admin");
   const id = str(fd, "id");

@@ -11,6 +11,7 @@ import { notifyAdminOfSale } from "@/lib/notify";
 import {
   capturePayment,
   createRazorpayOrder,
+  fetchOrderPayments,
   fetchPayment,
   getRazorpayConfig,
   RazorpayError,
@@ -24,7 +25,11 @@ import { absoluteUrl } from "@/lib/utils";
  *
  * Guarantees
  * - The amount always comes from the database, never from the client.
- * - An order becomes "paid" only after a verified Razorpay signature (checkout handler or webhook).
+ * - An order becomes "paid" only when Razorpay itself reports the payment as CAPTURED for this order,
+ *   amount and currency — via its API (checkout verify, reconcile) or a signed webhook. A browser
+ *   callback, redirect or "success" flag is never enough, and "authorized" is never enough.
+ * - Delivery (email + download tokens) only happens through fulfilOrder(), which only runs for paid
+ *   orders; the database also refuses download tokens for unpaid orders (migration 0005).
  * - "created/failed → paid" is a single atomic UPDATE, so concurrent or repeated confirmations
  *   (browser + webhook, webhook retries, page refreshes) fulfil an order exactly once.
  * - Email failure never undoes a payment: delivery has its own status and can be retried by an admin.
@@ -115,7 +120,46 @@ export async function createCheckout(input: { productSlug: unknown; email: unkno
 
 /* ------------------------------------------------- payment confirmation */
 
-type ConfirmSource = "checkout" | "webhook";
+type ConfirmSource = "checkout" | "webhook" | "reconcile";
+type OrderRow = typeof digitalOrders.$inferSelect;
+
+/** Is this Razorpay payment a CAPTURED payment for exactly this order, amount and currency (INR)? */
+function capturedFor(p: { order_id: string; amount: number; currency: string; status: string }, order: OrderRow) {
+  return p.order_id === order.razorpayOrderId && p.amount === order.amountMinor && p.currency === order.currency && p.currency === "INR" && p.status === "captured";
+}
+
+type CaptureCheck = { ok: true } | { ok: false; reason: "mismatch" | "not_captured" | "unreachable"; status?: string };
+
+/**
+ * Ask Razorpay's API (trusted, server-to-server) for the payment's real state. Captures an
+ * "authorized" payment first (no-op when auto-capture is on). Only "captured" counts as paid.
+ */
+async function confirmCaptureWithRazorpay(cfg: NonNullable<ReturnType<typeof getRazorpayConfig>>, paymentId: string, order: OrderRow): Promise<CaptureCheck> {
+  let p;
+  try {
+    p = await fetchPayment(cfg, paymentId);
+  } catch (err) {
+    console.warn("[checkout] could not fetch payment from Razorpay", err instanceof Error ? err.message : err);
+    return { ok: false, reason: "unreachable" };
+  }
+  if (p.order_id !== order.razorpayOrderId || p.amount !== order.amountMinor || p.currency !== order.currency || p.currency !== "INR") {
+    return { ok: false, reason: "mismatch", status: p.status };
+  }
+  if (p.status === "authorized") {
+    try {
+      p = await capturePayment(cfg, paymentId, order.amountMinor, order.currency);
+    } catch (err) {
+      // e.g. "already captured" by auto-capture in the meantime — re-read the truth instead of guessing.
+      console.warn("[checkout] capture call failed, re-checking", err instanceof Error ? err.message : err);
+      try {
+        p = await fetchPayment(cfg, paymentId);
+      } catch {
+        return { ok: false, reason: "unreachable" };
+      }
+    }
+  }
+  return capturedFor(p, order) ? { ok: true } : { ok: false, reason: "not_captured", status: p.status };
+}
 
 /**
  * Atomically mark an order paid. Returns `transitioned: true` only for the single call that
@@ -153,20 +197,23 @@ export async function confirmCheckoutPayment(input: { razorpayOrderId: unknown; 
     throw new CheckoutError("We couldn't verify this payment. If money was debited, it will be confirmed shortly or refunded.", 400);
   }
 
-  // Signature proves Razorpay authorised this payment for this order. Make sure it gets captured
-  // (no-op when auto-capture is on). Best effort: the webhook is the backstop.
+  // The signature only proves the browser's message came from Razorpay. Before fulfilling, ask
+  // Razorpay's API whether the money was actually CAPTURED for this order, amount and currency.
   const db = getDb();
   const [pending] = await db.select().from(digitalOrders).where(eq(digitalOrders.razorpayOrderId, orderId));
   if (!pending) throw new CheckoutError("Order not found.", 404);
-  try {
-    const payment = await fetchPayment(cfg, paymentId);
-    if (payment.order_id !== orderId || payment.amount !== pending.amountMinor) {
-      throw new CheckoutError("Payment details don't match this order.", 400);
+  const alreadyPaidByThis = pending.paymentStatus === "paid" && pending.razorpayPaymentId === paymentId;
+  if (!alreadyPaidByThis) {
+    const check = await confirmCaptureWithRazorpay(cfg, paymentId, pending);
+    if (!check.ok) {
+      if (check.reason === "mismatch") throw new CheckoutError("Payment details don't match this order.", 400);
+      if (check.reason === "not_captured" && (check.status === "failed" || check.status === "refunded")) {
+        throw new CheckoutError("This payment was not completed. You have not been charged for this order.", 400);
+      }
+      // Not captured yet (or Razorpay unreachable): nothing is delivered now. The signed webhook or
+      // the confirmation page's reconcile check fulfils the order once Razorpay reports it captured.
+      throw new CheckoutError("We're still confirming your payment with Razorpay.", 202);
     }
-    if (payment.status === "authorized") await capturePayment(cfg, paymentId, pending.amountMinor, pending.currency);
-  } catch (err) {
-    if (err instanceof CheckoutError) throw err;
-    console.warn("[checkout] could not fetch/capture payment (webhook will reconcile)", err instanceof Error ? err.message : err);
   }
 
   const { order, transitioned } = await markPaid(orderId, paymentId, "checkout", signature);
@@ -193,16 +240,20 @@ export async function confirmCheckoutPayment(input: { razorpayOrderId: unknown; 
 
 /** Webhook path: signature already verified by the route; payload values are trusted. */
 export async function confirmWebhookPayment(
-  p: { razorpayOrderId: string; paymentId: string; amount: number; currency: string },
+  p: { razorpayOrderId: string; paymentId: string; amount: number; currency: string; status: string },
   /** Razorpay expects a 2xx within 5 seconds, so the route defers email delivery until after responding. */
   defer: (task: () => Promise<unknown>) => void = (task) => void task(),
 ) {
   const db = getDb();
   const [existing] = await db.select().from(digitalOrders).where(eq(digitalOrders.razorpayOrderId, p.razorpayOrderId));
   if (!existing) return { handled: false as const, reason: "unknown order" };
-  if (existing.amountMinor !== p.amount || existing.currency !== p.currency) {
-    console.error(`[webhook] amount mismatch for ${existing.id}`);
+  if (existing.amountMinor !== p.amount || existing.currency !== p.currency || p.currency !== "INR") {
+    console.error(`[webhook] amount/currency mismatch for ${existing.id}`);
     return { handled: false as const, reason: "amount mismatch" };
+  }
+  if (p.status !== "captured") {
+    // e.g. an "authorized" payment: never deliver until Razorpay reports it captured.
+    return { handled: false as const, reason: `payment ${p.status || "unknown"}, not captured` };
   }
   const { order, transitioned } = await markPaid(p.razorpayOrderId, p.paymentId, "webhook");
   if (!order) return { handled: false as const, reason: "unknown order" };
@@ -212,6 +263,37 @@ export async function confirmWebhookPayment(
     defer(() => fulfilOrder(order.id, { notifyAdmin: false }));
   }
   return { handled: true as const, transitioned };
+}
+
+const lastReconcile = new Map<string, number>();
+
+/**
+ * Reconcile an unpaid order against Razorpay (server-to-server). Used when the customer's browser
+ * closed before the checkout handler ran — e.g. a UPI payment approved after the window was
+ * dismissed — and as a backstop if a webhook is late. Throttled per order. Never trusts the client.
+ */
+export async function reconcileOrder(orderId: string, defer: (task: () => Promise<unknown>) => void = (t) => void t()) {
+  const cfg = getRazorpayConfig();
+  if (!cfg) return { reconciled: false as const };
+  const db = getDb();
+  const [order] = await db.select().from(digitalOrders).where(eq(digitalOrders.id, orderId));
+  if (!order?.razorpayOrderId || order.paymentStatus === "paid" || order.paymentStatus === "refunded") return { reconciled: false as const };
+  const now = Date.now();
+  if (now - (lastReconcile.get(orderId) ?? 0) < 10_000) return { reconciled: false as const };
+  lastReconcile.set(orderId, now);
+  if (lastReconcile.size > 5000) lastReconcile.clear();
+  let items;
+  try {
+    items = (await fetchOrderPayments(cfg, order.razorpayOrderId)).items ?? [];
+  } catch (err) {
+    console.warn("[reconcile] Razorpay unreachable", err instanceof Error ? err.message : err);
+    return { reconciled: false as const };
+  }
+  const captured = items.find((p) => capturedFor(p, order));
+  if (!captured) return { reconciled: false as const };
+  const { order: paid, transitioned } = await markPaid(order.razorpayOrderId, captured.id, "reconcile");
+  if (transitioned && paid) defer(() => fulfilOrder(paid.id, { notifyAdmin: true }));
+  return { reconciled: transitioned };
 }
 
 export async function markPaymentFailed(razorpayOrderId: string, reason: string | null) {

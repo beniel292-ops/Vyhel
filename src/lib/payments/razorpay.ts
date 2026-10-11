@@ -74,3 +74,8 @@ export function fetchPayment(cfg: RazorpayConfig, paymentId: string) {
 export function capturePayment(cfg: RazorpayConfig, paymentId: string, amount: number, currency: string) {
   return call<RazorpayPayment>(cfg, "POST", `/payments/${encodeURIComponent(paymentId)}/capture`, { amount, currency });
 }
+
+/** All payment attempts on a Razorpay order (used to reconcile an order whose browser session was closed). */
+export function fetchOrderPayments(cfg: RazorpayConfig, orderId: string) {
+  return call<{ items: RazorpayPayment[] }>(cfg, "GET", `/orders/${encodeURIComponent(orderId)}/payments`);
+}

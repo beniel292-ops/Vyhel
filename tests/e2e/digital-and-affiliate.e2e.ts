@@ -31,6 +31,7 @@ const mock = {
   payments: new Map<string, { id: string; order_id: string; amount: number; currency: string; status: string }>(),
   emails: [] as Email[],
   failEmails: false,
+  failCapture: false,
   captures: 0,
 };
 const server = http.createServer((req, res) => {
@@ -49,11 +50,16 @@ const server = http.createServer((req, res) => {
       mock.orders.set(id, { id, amount: b.amount, currency: b.currency });
       return send(200, { id, amount: b.amount, currency: b.currency, receipt: b.receipt, status: "created" });
     }
+    const orderPays = url.match(/^\/v1\/orders\/(order_\w+)\/payments$/);
+    if (req.method === "GET" && orderPays) {
+      return send(200, { entity: "collection", items: [...mock.payments.values()].filter((p) => p.order_id === orderPays[1]) });
+    }
     const pay = url.match(/^\/v1\/payments\/(pay_\w+)(\/capture)?$/);
     if (pay) {
       const p = mock.payments.get(pay[1]);
       if (!p) return send(404, { error: { description: "not found" } });
       if (pay[2]) {
+        if (mock.failCapture) return send(400, { error: { description: "mock capture failure" } });
         mock.captures++;
         p.status = "captured";
       }
@@ -302,6 +308,176 @@ async function main() {
       const [o] = await sql`select payment_status, failure_reason from digital_orders where id = ${data.orderId}`;
       assert.equal(o.payment_status, "failed");
       assert.equal(o.failure_reason, "Card declined");
+    });
+
+    /* ============ PAYMENT GATING: nothing is delivered without a CAPTURED payment ============ */
+    const startOrder = async (email: string, s = slug) => {
+      // Distinct client addresses so the checkout rate limit (10/min per client) doesn't trip the test itself.
+      const ip = `10.42.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}`;
+      const { res, data } = await api("/api/digital-orders", { method: "POST", json: { productSlug: s, email }, headers: { "x-forwarded-for": ip } });
+      assert.equal(res.status, 201, JSON.stringify(data));
+      return data as { orderId: string; razorpay: { orderId: string; amount: number; currency: string } };
+    };
+    const orderRow = async (id: string) => (await sql`select * from digital_orders where id = ${id}`)[0];
+    const tokenCount = async (id: string) => (await sql`select count(*)::int n from digital_download_tokens where order_id = ${id}`)[0].n as number;
+    const status = async (id: string) => (await api(`/api/digital-orders/${id}/status`)).data;
+    const verifyPay = (p: { id: string; order_id: string }, orderIdOverride?: string) => {
+      const oid = orderIdOverride ?? p.order_id;
+      return api("/api/payments/razorpay/verify", { method: "POST", json: { razorpay_order_id: oid, razorpay_payment_id: p.id, razorpay_signature: sigFor(oid, p.id) } });
+    };
+    const assertNothingDelivered = async (id: string, email: string) => {
+      const o = await orderRow(id);
+      assert.notEqual(o.payment_status, "paid", "order must not be paid");
+      assert.equal(o.delivery_status, "pending", "nothing delivered");
+      assert.equal(await tokenCount(id), 0, "no download tokens");
+      assert.equal(customerEmails(email).length, 0, "no download email");
+    };
+
+    await step("gating 1: checkout dismissed before paying → status check finds nothing; no email, no token", async () => {
+      const c = await startOrder("dismiss@example.com");
+      const s = await status(c.orderId); // what the checkout box asks after the window is closed
+      assert.equal(s.paymentStatus, "created");
+      await new Promise((r) => setTimeout(r, 500));
+      await assertNothingDelivered(c.orderId, "dismiss@example.com");
+    });
+
+    await step("gating 2: opening the success URL without paying grants nothing", async () => {
+      const c = await startOrder("nopay@example.com");
+      assert.equal((await fetch(`${BASE}/checkout/success?order=${c.orderId}`)).status, 200);
+      assert.equal((await status(c.orderId)).paymentStatus, "created");
+      await assertNothingDelivered(c.orderId, "nopay@example.com");
+    });
+
+    await step("gating 3: failed payment → no email, no download, even with a valid-looking signature", async () => {
+      const c = await startOrder("failed@example.com");
+      const p = pay({ id: c.razorpay.orderId, amount: c.razorpay.amount, currency: c.razorpay.currency });
+      p.status = "failed";
+      await webhook("payment.failed", { ...p, error_description: "Card declined" });
+      const v = await verifyPay(p);
+      assert.equal(v.res.status, 400, JSON.stringify(v.data));
+      assert.equal((await orderRow(c.orderId)).payment_status, "failed");
+      await assertNothingDelivered(c.orderId, "failed@example.com");
+    });
+
+    await step("gating 4: authorized-but-not-captured → nothing until capture is confirmed", async () => {
+      const c = await startOrder("authonly@example.com");
+      const p = pay({ id: c.razorpay.orderId, amount: c.razorpay.amount, currency: c.razorpay.currency });
+      p.status = "authorized";
+      mock.failCapture = true;
+      const v = await verifyPay(p);
+      assert.equal(v.res.status, 202, JSON.stringify(v.data));
+      assert.equal(v.data.downloadToken, undefined);
+      const w = await webhook("payment.captured", { ...p, status: "authorized" }); // a payload that isn't captured
+      assert.equal(w.data.handled, false);
+      await assertNothingDelivered(c.orderId, "authonly@example.com");
+      mock.failCapture = false;
+      p.status = "captured";
+      await webhook("payment.captured", p);
+      await waitFor(async () => ((await orderRow(c.orderId)).delivery_status === "sent" ? true : null));
+      assert.equal(customerEmails("authonly@example.com").length, 1);
+    });
+
+    await step("gating 5: invalid signature → no fulfilment", async () => {
+      const c = await startOrder("badsig@example.com");
+      const p = pay({ id: c.razorpay.orderId, amount: c.razorpay.amount, currency: c.razorpay.currency });
+      const { res } = await api("/api/payments/razorpay/verify", { method: "POST", json: { razorpay_order_id: p.order_id, razorpay_payment_id: p.id, razorpay_signature: sigFor(p.order_id, p.id).replace(/.$/, "0") } });
+      assert.equal(res.status, 400);
+      await assertNothingDelivered(c.orderId, "badsig@example.com");
+    });
+
+    await step("gating 6: amount or currency mismatch → no fulfilment (verify and webhook)", async () => {
+      const c = await startOrder("mismatch2@example.com");
+      const p = pay({ id: c.razorpay.orderId, amount: c.razorpay.amount, currency: c.razorpay.currency });
+      p.amount = 100;
+      assert.equal((await verifyPay(p)).res.status, 400);
+      assert.equal((await webhook("payment.captured", p)).data.handled, false);
+      p.amount = c.razorpay.amount;
+      p.currency = "USD";
+      assert.equal((await verifyPay(p)).res.status, 400);
+      assert.equal((await webhook("payment.captured", p)).data.handled, false);
+      await assertNothingDelivered(c.orderId, "mismatch2@example.com");
+    });
+
+    await step("gating 7: payment for a different Razorpay order → no fulfilment", async () => {
+      const a = await startOrder("ordera@example.com");
+      const b = await startOrder("orderb@example.com");
+      const p = pay({ id: a.razorpay.orderId, amount: a.razorpay.amount, currency: a.razorpay.currency }); // captured payment that belongs to order A
+      assert.equal((await verifyPay(p, b.razorpay.orderId)).res.status, 400);
+      await assertNothingDelivered(b.orderId, "orderb@example.com");
+    });
+
+    await step("gating 8+9: valid capture fulfils once; duplicate webhooks don't re-deliver", async () => {
+      const c = await startOrder("valid@example.com");
+      const p = pay({ id: c.razorpay.orderId, amount: c.razorpay.amount, currency: c.razorpay.currency });
+      const v = await verifyPay(p);
+      assert.equal(v.res.status, 200);
+      for (let i = 0; i < 3; i++) await webhook("payment.captured", p);
+      await webhook("order.paid", p);
+      await new Promise((r) => setTimeout(r, 800));
+      const mails = customerEmails("valid@example.com");
+      assert.equal(mails.length, 1, "exactly one download email");
+      assert.match(mails[0].subject, new RegExp(`E2E Guide ${runId}`));
+    });
+
+    await step("gating 10+11: failed then captured reconciles to paid; a late failure never downgrades", async () => {
+      const c = await startOrder("retry2@example.com");
+      const p1 = pay({ id: c.razorpay.orderId, amount: c.razorpay.amount, currency: c.razorpay.currency });
+      p1.status = "failed";
+      await webhook("payment.failed", p1);
+      assert.equal((await orderRow(c.orderId)).payment_status, "failed");
+      const p2 = pay({ id: c.razorpay.orderId, amount: c.razorpay.amount, currency: c.razorpay.currency });
+      await webhook("payment.captured", p2);
+      await waitFor(async () => ((await orderRow(c.orderId)).delivery_status === "sent" ? true : null));
+      await webhook("payment.failed", { ...p1, id: p1.id });
+      const o = await orderRow(c.orderId);
+      assert.equal(o.payment_status, "paid");
+      assert.equal(o.razorpay_payment_id, p2.id);
+      assert.equal(customerEmails("retry2@example.com").length, 1);
+    });
+
+    await step("gating 12: the database refuses tokens for unpaid orders, and downloads check payment", async () => {
+      const c = await startOrder("unpaidtoken@example.com");
+      const raw = randomBytes(32).toString("base64url");
+      const refused = await sql`insert into digital_download_tokens (order_id, token_hash, reason, expires_at, max_downloads) values (${c.orderId}, ${createHash("sha256").update(raw).digest("hex")}, 'e2e', now() + interval '1 day', 3)`.then(() => false, () => true);
+      assert.ok(refused, "DB trigger refuses tokens for unpaid orders");
+      // A token issued while paid stops working if the order is later refunded.
+      const paid = await startOrder("refunded@example.com");
+      const p = pay({ id: paid.razorpay.orderId, amount: paid.razorpay.amount, currency: paid.razorpay.currency });
+      const v = await verifyPay(p);
+      assert.equal(v.res.status, 200);
+      await sql`update digital_orders set payment_status = 'refunded' where id = ${paid.orderId}`;
+      const d = await fetch(`${BASE}/api/downloads/${v.data.downloadToken}`, { redirect: "manual" });
+      assert.equal(d.status, 303);
+      assert.match(d.headers.get("location") ?? "", /error=unpaid/);
+    });
+
+    await step("gating 13: closed window but the UPI payment completed later → server reconciles and delivers once", async () => {
+      const c = await startOrder("lateupi@example.com");
+      pay({ id: c.razorpay.orderId, amount: c.razorpay.amount, currency: c.razorpay.currency }); // captured at Razorpay; no browser handler, no webhook
+      const s = await status(c.orderId);
+      assert.equal(s.paymentStatus, "paid");
+      await waitFor(async () => ((await orderRow(c.orderId)).delivery_status === "sent" ? true : null));
+      assert.equal((await orderRow(c.orderId)).payment_source, "reconcile");
+      assert.equal(customerEmails("lateupi@example.com").length, 1);
+    });
+
+    await step("gating 14: each digital product charges its own price and delivers its own file", async () => {
+      const fd = new FormData();
+      const bytesB = Buffer.from(`%PDF-1.4\n% Vyhel e2e second product ${runId}\n`);
+      fd.append("file", new Blob([bytesB], { type: "application/pdf" }), "e2e-second.pdf");
+      const up = await api("/api/digital-products/files", { method: "POST", body: fd, auth: true });
+      const created = await api("/api/digital-products", { method: "POST", auth: true, json: { name: `E2E Second ${runId}`, slug: `${slug}-b`, price: "99", fileId: up.data.file.id, status: "active", shortDescription: "Second" } });
+      assert.equal(created.res.status, 201, JSON.stringify(created.data));
+      const c = await startOrder("second@example.com", `${slug}-b`);
+      assert.equal(c.razorpay.amount, 9900);
+      const p = pay({ id: c.razorpay.orderId, amount: c.razorpay.amount, currency: c.razorpay.currency });
+      const v = await verifyPay(p);
+      assert.equal(v.res.status, 200);
+      const file = Buffer.from(await (await fetch(`${BASE}/api/downloads/${v.data.downloadToken}`)).arrayBuffer());
+      assert.ok(file.equals(bytesB), "second product's own file");
+      await waitFor(async () => (customerEmails("second@example.com").length ? true : null));
+      assert.match(customerEmails("second@example.com")[0].subject, new RegExp(`E2E Second ${runId}`));
+      await sql`update digital_products set status = 'archived' where slug = ${`${slug}-b`}`;
     });
 
     await step("inactive digital products cannot be bought", async () => {

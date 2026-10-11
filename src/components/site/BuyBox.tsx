@@ -44,6 +44,17 @@ function loadCheckoutScript(): Promise<boolean> {
   });
 }
 
+/** Polls the server-side order status (which reconciles with Razorpay) a few times. */
+async function serverSaysPaid(orderId: string) {
+  for (let i = 0; i < 3; i++) {
+    const r = await fetch(`/api/digital-orders/${orderId}/status`, { cache: "no-store" }).catch(() => null);
+    const s = (await r?.json().catch(() => null)) as { paymentStatus?: string } | null;
+    if (s?.paymentStatus === "paid") return true;
+    if (i < 2) await new Promise((res) => setTimeout(res, 1500));
+  }
+  return false;
+}
+
 export function BuyBox({ slug, priceLabel, productName }: { slug: string; priceLabel: string; productName: string }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -110,9 +121,21 @@ export function BuyBox({ slug, priceLabel, productName }: { slug: string; priceL
       notes: { vyhel_order: orderId },
       theme: { color: "#171717" },
       modal: {
-        ondismiss: () => {
+        // Closing the window is NOT proof that nothing was paid (a UPI payment can still complete).
+        // Ask the server, which checks with Razorpay; it never delivers anything for an unpaid order.
+        ondismiss: async () => {
+          setState("verifying");
+          const paid = await serverSaysPaid(orderId);
+          if (paid) {
+            router.push(`/checkout/success?order=${orderId}`);
+            return;
+          }
           setState("idle");
-          setError(failure ? `${failure} If any money was debited, it is refunded automatically.` : "Payment cancelled. You haven't been charged.");
+          setError(
+            failure
+              ? `${failure} No payment was received for this order. If any money was debited, it is refunded automatically.`
+              : "Payment cancelled — no payment was received for this order, so nothing was charged or sent. You can try again below. (If you approved a UPI payment just before closing, we'll email your download once Razorpay confirms it.)",
+          );
         },
       },
       handler: async (r: RazorpayHandlerResponse) => {

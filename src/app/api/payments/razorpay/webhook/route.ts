@@ -43,7 +43,7 @@ export async function POST(req: Request) {
   try {
     if ((type === "payment.captured" || type === "order.paid") && payment?.order_id) {
       const r = await confirmWebhookPayment(
-        { razorpayOrderId: payment.order_id, paymentId: payment.id, amount: payment.amount, currency: payment.currency },
+        { razorpayOrderId: payment.order_id, paymentId: payment.id, amount: payment.amount, currency: payment.currency, status: payment.status },
         (task) => after(async () => {
           try {
             await task();

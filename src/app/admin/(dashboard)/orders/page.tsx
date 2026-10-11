@@ -29,7 +29,13 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
           Email isn&rsquo;t configured (RESEND_API_KEY). Payments still work, but download emails will show as failed until it&rsquo;s set — then use &ldquo;Resend email&rdquo;.
         </p>
       ) : mail.senderIssue ? (
-        <p className="mb-4 rounded-md border border-warn/30 bg-warn-soft px-4 py-3 text-sm text-warn">{mail.senderIssue}</p>
+        <div className="mb-4 rounded-md border border-warn/30 bg-warn-soft px-4 py-3 text-sm text-warn">
+          <p>{mail.senderIssue}</p>
+          <p className="mt-1 text-xs opacity-80">
+            Running deployment: {process.env.VERCEL_ENV ?? "local"}
+            {process.env.VERCEL_GIT_COMMIT_SHA ? ` · commit ${process.env.VERCEL_GIT_COMMIT_SHA.slice(0, 7)}` : ""}. Environment variable changes only apply after a redeploy.
+          </p>
+        </div>
       ) : null}
       <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat label="Revenue · 30 days" value={formatMoney(summary.revenueMinor)} />

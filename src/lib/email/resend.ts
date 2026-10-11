@@ -1,5 +1,6 @@
 import "server-only";
-import { describeResendError, redactEmails, RESEND_TEST_DOMAIN, senderDomain } from "./errors";
+import { describeResendError, redactEmails } from "./errors";
+import { resolveSender, senderDomain } from "./sender";
 
 export { redactEmails, senderDomain };
 
@@ -12,20 +13,16 @@ export type SendResult = { ok: true; id: string } | { ok: false; error: string }
 
 export function emailConfig() {
   const apiKey = process.env.RESEND_API_KEY?.trim();
-  const from = process.env.EMAIL_FROM?.trim() || "Vyhel <onboarding@resend.dev>";
-  const domain = senderDomain(from);
+  const sender = resolveSender({ EMAIL_FROM: process.env.EMAIL_FROM, VERCEL_ENV: process.env.VERCEL_ENV });
   return {
     configured: Boolean(apiKey),
     apiKey,
-    from,
-    senderDomain: domain,
-    /** Set when customers can't receive mail with this sender (shown to admins; never a secret). */
-    senderIssue:
-      !domain
-        ? "EMAIL_FROM is not a valid sender address."
-        : domain === RESEND_TEST_DOMAIN
-          ? "EMAIL_FROM uses Resend's test sender (resend.dev), which only delivers to the Resend account owner. Customers will not receive download emails. Set EMAIL_FROM to an address on your verified domain, e.g. Vyhel <orders@vyhel.co.in>."
-          : null,
+    /** Null when sending must not happen (e.g. production without a verified-domain sender). */
+    from: sender.from,
+    senderDomain: sender.domain,
+    senderStatus: sender.status,
+    /** Shown to admins; never contains secrets. */
+    senderIssue: sender.issue,
     adminEmail: process.env.ADMIN_EMAIL?.trim() || null,
     apiBase: ((process.env.VERCEL_ENV === "production" ? "" : process.env.RESEND_API_BASE?.trim()) || "https://api.resend.com").replace(/\/$/, ""),
   };
@@ -42,6 +39,7 @@ export async function sendEmail(input: {
 }): Promise<SendResult> {
   const cfg = emailConfig();
   if (!cfg.apiKey) return { ok: false, error: "Email is not configured (RESEND_API_KEY missing)." };
+  if (!cfg.from) return { ok: false, error: `Email sender misconfigured: ${cfg.senderIssue ?? "EMAIL_FROM is invalid."}` };
   try {
     const res = await fetch(`${cfg.apiBase}/emails`, {
       method: "POST",

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { test } from "node:test";
-import { describeResendError, redactEmails, senderDomain } from "../src/lib/email/errors";
+import { describeResendError, redactEmails } from "../src/lib/email/errors";
+import { resolveSender, senderDomain } from "../src/lib/email/sender";
 import { verifyResendWebhook } from "../src/lib/email/webhook-signature";
 
 test("sender domain is read from EMAIL_FROM", () => {
@@ -9,6 +10,59 @@ test("sender domain is read from EMAIL_FROM", () => {
   assert.equal(senderDomain("orders@Vyhel.co.in"), "vyhel.co.in");
   assert.equal(senderDomain("Vyhel <onboarding@resend.dev>"), "resend.dev");
   assert.equal(senderDomain("not an address"), null);
+  assert.equal(senderDomain("Vyhel <orders@vyhel.co.in"), null, "unbalanced bracket");
+});
+
+const PROD = { VERCEL_ENV: "production" };
+
+test("production: a verified-domain sender is used exactly as configured", () => {
+  for (const value of ["Vyhel <orders@vyhel.co.in>", '"Vyhel <orders@vyhel.co.in>"', "  orders@vyhel.co.in  "]) {
+    const r = resolveSender({ ...PROD, EMAIL_FROM: value });
+    assert.equal(r.status, "ok", value);
+    assert.equal(r.domain, "vyhel.co.in");
+    assert.equal(r.issue, null);
+    assert.ok(r.from && !r.from.startsWith('"'), "surrounding quotes are stripped");
+    assert.ok(r.from!.includes("orders@vyhel.co.in"));
+  }
+});
+
+test("production: a missing sender blocks sending instead of falling back to resend.dev", () => {
+  for (const value of [undefined, "", "   "]) {
+    const r = resolveSender({ ...PROD, EMAIL_FROM: value });
+    assert.equal(r.status, "missing");
+    assert.equal(r.from, null);
+    assert.match(r.issue!, /not set/);
+    assert.match(r.issue!, /redeploy/);
+  }
+});
+
+test("production: a resend.dev sender is refused", () => {
+  for (const value of ["Vyhel <onboarding@resend.dev>", "onboarding@resend.dev", "x@mail.resend.dev"]) {
+    const r = resolveSender({ ...PROD, EMAIL_FROM: value });
+    assert.equal(r.status, "test_sender", value);
+    assert.equal(r.from, null);
+    assert.match(r.issue!, /resend\.dev/);
+  }
+});
+
+test("production: a malformed sender is refused", () => {
+  for (const value of ["Vyhel", "Vyhel <orders@>", "<@vyhel.co.in>"]) {
+    const r = resolveSender({ ...PROD, EMAIL_FROM: value });
+    assert.equal(r.status, "invalid", value);
+    assert.equal(r.from, null);
+  }
+});
+
+test("local/preview: the Resend test sender is allowed but flagged", () => {
+  const missing = resolveSender({ EMAIL_FROM: undefined });
+  assert.equal(missing.from, "Vyhel <onboarding@resend.dev>");
+  assert.equal(missing.status, "test_sender");
+  assert.ok(missing.issue);
+  const preview = resolveSender({ VERCEL_ENV: "preview", EMAIL_FROM: "onboarding@resend.dev" });
+  assert.equal(preview.from, "onboarding@resend.dev");
+  assert.ok(preview.issue);
+  const ok = resolveSender({ VERCEL_ENV: "preview", EMAIL_FROM: "Vyhel <orders@vyhel.co.in>" });
+  assert.equal(ok.status, "ok");
 });
 
 test("Resend's testing-mode refusal is explained and never echoes addresses", () => {

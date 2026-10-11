@@ -313,7 +313,9 @@ src/
 
 1. Create a Resend account and an API key → `RESEND_API_KEY`.
 2. Add and verify your domain (DNS records) in Resend, then set `EMAIL_FROM="Vyhel <orders@yourdomain.com>"`.
-   Until a domain is verified, `onboarding@resend.dev` can only send to your own Resend account address — fine for testing, not for customers.
+   Until a domain is verified, `onboarding@resend.dev` can only send to your own Resend account address — fine for local testing, not for customers.
+   **Production refuses to send** (with a clear error on Admin → Orders) when `EMAIL_FROM` is missing, malformed or a `resend.dev` address — it never falls back silently.
+   Vercel applies environment-variable changes only to new deployments, so **redeploy after setting or changing `EMAIL_FROM`**, and set it for the *Production* environment (not only Preview/Development).
 3. Set `ADMIN_EMAIL` to receive new-sale notifications.
 4. Set a **Contact email** in Admin → Settings — it's used as the support/reply-to address in delivery emails.
 5. Check delivery in Resend → **Emails** (each delivery is tagged `type=digital_delivery`). If an email fails, the order stays **paid** with delivery **failed**; fix the cause and use **Resend download email** on the order.

@@ -8,7 +8,7 @@ export const metadata: Metadata = { title: "Privacy Policy", alternates: { canon
 export default async function PrivacyPage() {
   const s = await getSettings();
   return (
-    <LegalPage eyebrow="Legal" title="Privacy policy" updated="2026-10-04">
+    <LegalPage eyebrow="Legal" title="Privacy policy" updated="2026-10-11">
       <p>
         {s.siteName} is built to need as little information about you as possible. You don&rsquo;t need an account to use
         the site.
@@ -16,9 +16,9 @@ export default async function PrivacyPage() {
       <h2>What we collect</h2>
       <ul>
         <li>
-          <strong>Aggregate usage.</strong> We record which pages are viewed, which products&rsquo; merchant links are
-          clicked, where on the page the click happened, and the general source of the visit (for example
-          &ldquo;instagram&rdquo; or &ldquo;google&rdquo;).
+          <strong>Aggregate usage.</strong> We record which pages are viewed
+          {s.reviewMode ? null : <>, which products&rsquo; merchant links are clicked, where on the page the click happened,</>} and the
+          general source of the visit (for example &ldquo;instagram&rdquo; or &ldquo;google&rdquo;).
         </li>
         <li>
           <strong>No IP addresses or device fingerprints.</strong> Our own analytics don&rsquo;t store your IP address,
@@ -39,9 +39,14 @@ export default async function PrivacyPage() {
       <h2>Third parties</h2>
       <ul>
         <li>
-          <strong>Amazon.</strong> When you follow a paid link, Amazon may set cookies to attribute your purchase. Their
-          use of data is governed by Amazon&rsquo;s privacy notice.
+          <strong>Razorpay.</strong> Your payment is handled on Razorpay&rsquo;s checkout and governed by Razorpay&rsquo;s privacy policy.
         </li>
+        {s.reviewMode ? null : (
+          <li>
+            <strong>Amazon.</strong> When you follow a paid link, Amazon may set cookies to attribute your purchase. Their
+            use of data is governed by Amazon&rsquo;s privacy notice.
+          </li>
+        )}
         {s.googleAnalyticsId ? (
           <li>
             <strong>Google Analytics.</strong> We use Google Analytics with IP anonymisation to understand overall traffic.

@@ -7,6 +7,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { JsonLd, breadcrumbLd } from "@/lib/jsonld";
 import { absoluteUrl } from "@/lib/utils";
 import { getCategoryBySlug } from "@/server/queries/public";
+import { notFoundInReviewMode } from "@/lib/review-mode";
 
 export const revalidate = 300;
 
@@ -28,6 +29,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 }
 
 export default async function CategoryPage({ params }: Props) {
+  await notFoundInReviewMode(); // Razorpay review mode — docs/razorpay-review-mode.md
   const { slug } = await params;
   const d = await getCategoryBySlug(slug);
   if (!d) notFound();

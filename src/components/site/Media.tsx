@@ -45,6 +45,7 @@ export function EditorialImage({
   rounded = true,
   label,
   compact,
+  fit = "cover",
 }: {
   src?: string | null;
   alt?: string | null;
@@ -56,6 +57,8 @@ export function EditorialImage({
   rounded?: boolean;
   label?: string;
   compact?: boolean;
+  /** "contain" shows the whole image (e.g. a book cover) instead of cropping it. */
+  fit?: "cover" | "contain";
 }) {
   const bg = (tone && TONES[tone]) || "#ebe8e1";
   return (
@@ -76,7 +79,10 @@ export function EditorialImage({
             optimize={isOptimizable(src)}
             sizes={sizes}
             priority={priority}
-            className="object-cover transition-transform duration-300 ease-[var(--ease-calm)] group-hover:scale-[1.025]"
+            className={cn(
+              fit === "contain" ? "object-contain p-[4%]" : "object-cover",
+              "transition-transform duration-300 ease-[var(--ease-calm)] group-hover:scale-[1.025]",
+            )}
           />
       ) : compact ? (
         <div role="img" aria-label={alt || name} className="absolute inset-0 flex items-center justify-center">

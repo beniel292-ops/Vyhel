@@ -2,6 +2,7 @@ import "server-only";
 import { and, asc, desc, eq, gte, ilike, inArray, ne, or, sql, type SQL } from "drizzle-orm";
 import { cache } from "react";
 import { getDb, isDatabaseConfigured, schema } from "@/db";
+import { isReviewMode } from "@/lib/review-mode";
 
 const { products, categories, collections, collectionProducts, guides, guideProducts, affiliateLinks } = schema;
 
@@ -98,10 +99,19 @@ async function safe<T>(fallback: T, fn: () => Promise<T>): Promise<T> {
   return fn();
 }
 
+/**
+ * Public affiliate reads. In Razorpay review mode (docs/razorpay-review-mode.md) these return the empty
+ * fallback, so no public page, list, search or sitemap can expose affiliate content. Data is untouched.
+ */
+async function affiliateRead<T>(fallback: T, fn: () => Promise<T>): Promise<T> {
+  if (await isReviewMode()) return fallback;
+  return safe(fallback, fn);
+}
+
 /* ------------------------------------------------------------- categories */
 
 export const getCategoriesWithCounts = cache(async (): Promise<CategoryCardData[]> =>
-  safe([], async () => {
+  affiliateRead([], async () => {
     const db = getDb();
     const rows = await db
       .select({
@@ -122,7 +132,7 @@ export const getCategoriesWithCounts = cache(async (): Promise<CategoryCardData[
 );
 
 export const getCategoryBySlug = cache(async (slug: string) =>
-  safe(null, async () => {
+  affiliateRead(null, async () => {
     const db = getDb();
     const [category] = await db.select().from(categories).where(eq(categories.slug, slug)).limit(1);
     if (!category) return null;
@@ -163,7 +173,7 @@ export const getCategoryBySlug = cache(async (slug: string) =>
 
 /** "Worth a look": products getting attention recently (real click data), then editorial featured flags. */
 export const getTrendingProducts = cache(async (limit = 8): Promise<ProductCardData[]> =>
-  safe([], async () => {
+  affiliateRead([], async () => {
     const db = getDb();
     const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
     const recentClicks = db
@@ -192,7 +202,7 @@ export const getTrendingProducts = cache(async (limit = 8): Promise<ProductCardD
 );
 
 export const getHeroProducts = cache(async (): Promise<ProductCardData[]> =>
-  safe([], async () =>
+  affiliateRead([], async () =>
     getDb()
       .select(productCardSelect)
       .from(products)
@@ -215,7 +225,7 @@ export type ProductFilters = {
 export const PAGE_SIZE = 24;
 
 export async function listProducts(filters: ProductFilters) {
-  return safe({ items: [] as ProductCardData[], total: 0 }, async () => {
+  return affiliateRead({ items: [] as ProductCardData[], total: 0 }, async () => {
     const db = getDb();
     const where: SQL[] = [published];
     if (filters.q) {
@@ -262,7 +272,7 @@ export async function listProducts(filters: ProductFilters) {
 
 /** Distinct "best for" tags across published products, for the filter bar. */
 export const getBestForOptions = cache(async (): Promise<string[]> =>
-  safe([], async () => {
+  affiliateRead([], async () => {
     const rows = await getDb().execute<{ tag: string }>(
       sql`select distinct unnest(best_for) as tag from products where status = 'published' order by 1`,
     );
@@ -271,7 +281,7 @@ export const getBestForOptions = cache(async (): Promise<string[]> =>
 );
 
 export async function getProductDetail(slug: string, opts: { includeUnpublished?: boolean } = {}) {
-  return safe(null, async () => {
+  return (opts.includeUnpublished ? safe : affiliateRead)(null, async () => {
     const db = getDb();
     const [row] = await db
       .select({ product: products, category: categories })
@@ -350,7 +360,7 @@ export type ProductDetail = NonNullable<Awaited<ReturnType<typeof getProductDeta
 /* ----------------------------------------------------------------- guides */
 
 export async function listGuides(filter: { type?: string; category?: string; limit?: number } = {}) {
-  return safe([] as GuideCardData[], async () => {
+  return affiliateRead([] as GuideCardData[], async () => {
     const where: SQL[] = [eq(guides.status, "published")];
     if (filter.type && (schema.guideType.enumValues as readonly string[]).includes(filter.type)) {
       where.push(eq(guides.guideType, filter.type as (typeof schema.guideType.enumValues)[number]));
@@ -367,7 +377,7 @@ export async function listGuides(filter: { type?: string; category?: string; lim
 }
 
 export async function getGuideDetail(slug: string, opts: { includeUnpublished?: boolean; id?: string } = {}) {
-  return safe(null, async () => {
+  return (opts.includeUnpublished ? safe : affiliateRead)(null, async () => {
     const db = getDb();
     const match = opts.id ? eq(guides.id, opts.id) : eq(guides.slug, slug);
     const [row] = await db
@@ -425,7 +435,7 @@ export type GuideDetail = NonNullable<Awaited<ReturnType<typeof getGuideDetail>>
 /* ------------------------------------------------------------ collections */
 
 export async function listCollections(opts: { featuredOnly?: boolean; limit?: number } = {}) {
-  return safe([] as CollectionCardData[], async () => {
+  return affiliateRead([] as CollectionCardData[], async () => {
     const db = getDb();
     const where: SQL[] = [eq(collections.status, "published")];
     if (opts.featuredOnly) where.push(eq(collections.featured, true));
@@ -474,7 +484,7 @@ export async function listCollections(opts: { featuredOnly?: boolean; limit?: nu
 }
 
 export async function getCollectionDetail(slug: string, opts: { includeUnpublished?: boolean; id?: string } = {}) {
-  return safe(null, async () => {
+  return (opts.includeUnpublished ? safe : affiliateRead)(null, async () => {
     const db = getDb();
     const match = opts.id ? eq(collections.id, opts.id) : eq(collections.slug, slug);
     const [collection] = await db
@@ -526,7 +536,7 @@ export async function searchAll(query: string, limit = 6): Promise<SearchResults
   const empty: SearchResults = { products: [], guides: [], collections: [], categories: [] };
   const q = query.trim().slice(0, 80);
   if (q.length < 2) return empty;
-  return safe(empty, async () => {
+  return affiliateRead(empty, async () => {
     const db = getDb();
     const like = `%${q.replace(/[%_]/g, "")}%`;
     const [p, g, c, cat] = await Promise.all([
@@ -578,7 +588,7 @@ export async function searchAll(query: string, limit = 6): Promise<SearchResults
 /* ---------------------------------------------------------------- sitemap */
 
 export async function getSitemapEntries() {
-  return safe({ products: [], guides: [], collections: [], categories: [] } as {
+  return affiliateRead({ products: [], guides: [], collections: [], categories: [] } as {
     products: { slug: string; updatedAt: Date }[];
     guides: { slug: string; updatedAt: Date }[];
     collections: { slug: string; updatedAt: Date }[];

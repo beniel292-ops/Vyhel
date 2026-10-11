@@ -7,6 +7,8 @@ import { CategoryCard, CollectionCard, FeatureCollection, GuideCard, ProductGrid
 import { EditorialImage } from "@/components/site/Media";
 import { ScoreBadge, SectionHeader } from "@/components/site/bits";
 import { DigitalProductCard } from "@/components/site/DigitalCards";
+import { DigitalHome } from "@/components/site/DigitalHome";
+import { isReviewMode } from "@/lib/review-mode";
 import { getSettings } from "@/lib/settings";
 import { listPublicDigitalProducts } from "@/server/services/digital-products";
 import {
@@ -22,6 +24,11 @@ export const revalidate = 300;
 export const metadata: Metadata = { alternates: { canonical: "/" } };
 
 export default async function HomePage() {
+  // Razorpay review mode (docs/razorpay-review-mode.md): the home page shows only Vyhel's digital products.
+  if (await isReviewMode()) {
+    const [s, items] = await Promise.all([getSettings(), listPublicDigitalProducts()]);
+    return <DigitalHome settings={s} products={items} />;
+  }
   const [settings, hero, trending, categories, collections, guides, shop] = await Promise.all([
     getSettings(),
     getHeroProducts(),

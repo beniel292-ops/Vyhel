@@ -1,8 +1,10 @@
 import Link from "next/link";
 import { buttonClasses } from "@/components/ui/Button";
 import { Wordmark } from "@/components/site/Logo";
+import { isReviewMode } from "@/lib/review-mode";
 
-export default function NotFound() {
+export default async function NotFound() {
+  const review = await isReviewMode(); // docs/razorpay-review-mode.md
   return (
     <div className="flex min-h-dvh flex-col">
       <header className="container-page flex h-16 items-center">
@@ -18,8 +20,14 @@ export default function NotFound() {
         </p>
         <div className="mt-8 flex flex-wrap gap-3">
           <Link href="/" className={buttonClasses("primary", "lg")}>Go home</Link>
-          <Link href="/products" className={buttonClasses("secondary", "lg")}>Browse products</Link>
-          <Link href="/guides" className={buttonClasses("ghost", "lg")}>Read guides</Link>
+          {review ? (
+            <Link href="/shop" className={buttonClasses("secondary", "lg")}>Browse the shop</Link>
+          ) : (
+            <>
+              <Link href="/products" className={buttonClasses("secondary", "lg")}>Browse products</Link>
+              <Link href="/guides" className={buttonClasses("ghost", "lg")}>Read guides</Link>
+            </>
+          )}
         </div>
       </main>
     </div>

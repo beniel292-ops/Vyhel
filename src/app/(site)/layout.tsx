@@ -3,19 +3,20 @@ import { Footer } from "@/components/site/Footer";
 import { Navbar } from "@/components/site/Navbar";
 import { PageViewTracker } from "@/components/site/Analytics";
 import { SearchDialog } from "@/components/site/SearchDialog";
+import { isReviewMode } from "@/lib/review-mode";
 import { getSettings } from "@/lib/settings";
 
 export default async function SiteLayout({ children }: { children: React.ReactNode }) {
-  const settings = await getSettings();
+  const [settings, review] = await Promise.all([getSettings(), isReviewMode()]);
   const ga = /^G-[A-Z0-9]+$/.test(settings.googleAnalyticsId) ? settings.googleAnalyticsId : null;
   return (
     <>
-      <Navbar />
+      <Navbar reviewMode={review} />
       <main id="main" className="min-h-[60vh]">
         {children}
       </main>
-      <Footer settings={settings} />
-      <SearchDialog />
+      <Footer settings={settings} reviewMode={review} />
+      {review ? null : <SearchDialog />}
       <PageViewTracker />
       {ga ? (
         <>

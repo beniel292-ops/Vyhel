@@ -16,7 +16,15 @@ const NAV = [
   { href: "/shop", label: "Shop" },
 ];
 
-export function Navbar() {
+/** Razorpay review mode (docs/razorpay-review-mode.md): only the digital-products business is linked. */
+const REVIEW_NAV = [
+  { href: "/shop", label: "Shop" },
+  { href: "/about", label: "About" },
+  { href: "/contact", label: "Contact" },
+];
+
+export function Navbar({ reviewMode = false }: { reviewMode?: boolean }) {
+  const nav = reviewMode ? REVIEW_NAV : NAV;
   const pathname = usePathname();
   // Menu is "open for this path" — navigating anywhere closes it without an effect.
   const [openOn, setOpenOn] = useState<string | null>(null);
@@ -42,7 +50,7 @@ export function Navbar() {
         <Logo />
         <nav aria-label="Primary" className="hidden md:block">
           <ul className="flex items-center gap-5 lg:gap-7">
-            {NAV.map((item) => (
+            {nav.map((item) => (
               <li key={item.href}>
                 <Link
                   href={item.href}
@@ -61,23 +69,27 @@ export function Navbar() {
           </ul>
         </nav>
         <div className="ml-auto flex items-center gap-1">
-          <button
-            type="button"
-            onClick={openSearch}
-            className="hidden h-9 w-40 shrink-0 items-center gap-2 lg:w-60 rounded-md border border-line bg-surface/70 px-3 text-left text-[13px] text-faint transition-colors hover:border-ink/30 md:flex"
-          >
-            <SearchIcon size={15} className="text-muted" />
-            <span className="flex-1 truncate">Search Vyhel</span>
-            <kbd className="hidden rounded border lg:inline border-line px-1.5 font-sans text-[11px] text-muted">{mac ? "⌘" : "Ctrl"} K</kbd>
-          </button>
-          <button
-            type="button"
-            onClick={openSearch}
-            aria-label="Search"
-            className="flex size-11 items-center justify-center rounded-md text-ink hover:bg-sunken md:hidden"
-          >
-            <SearchIcon size={20} />
-          </button>
+          {reviewMode ? null : (
+            <>
+              <button
+                type="button"
+                onClick={openSearch}
+                className="hidden h-9 w-40 shrink-0 items-center gap-2 lg:w-60 rounded-md border border-line bg-surface/70 px-3 text-left text-[13px] text-faint transition-colors hover:border-ink/30 md:flex"
+              >
+                <SearchIcon size={15} className="text-muted" />
+                <span className="flex-1 truncate">Search Vyhel</span>
+                <kbd className="hidden rounded border lg:inline border-line px-1.5 font-sans text-[11px] text-muted">{mac ? "⌘" : "Ctrl"} K</kbd>
+              </button>
+              <button
+                type="button"
+                onClick={openSearch}
+                aria-label="Search"
+                className="flex size-11 items-center justify-center rounded-md text-ink hover:bg-sunken md:hidden"
+              >
+                <SearchIcon size={20} />
+              </button>
+            </>
+          )}
           <button
             type="button"
             onClick={() => setOpen(!open)}
@@ -93,7 +105,7 @@ export function Navbar() {
       {open ? (
         <nav id="mobile-menu" aria-label="Mobile" className="animate-fade-up border-t border-line bg-canvas md:hidden">
           <ul className="container-page py-2">
-            {NAV.map((item) => (
+            {nav.map((item) => (
               <li key={item.href}>
                 <Link
                   href={item.href}

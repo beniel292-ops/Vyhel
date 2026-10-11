@@ -5,6 +5,7 @@ import { GUIDE_TYPE_LABELS, PageHeader } from "@/components/site/bits";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { cn } from "@/lib/utils";
 import { getCategoriesWithCounts, listGuides } from "@/server/queries/public";
+import { notFoundInReviewMode } from "@/lib/review-mode";
 
 export const metadata: Metadata = {
   title: "Guides",
@@ -15,6 +16,7 @@ export const metadata: Metadata = {
 type SP = Promise<Record<string, string | string[] | undefined>>;
 
 export default async function GuidesPage({ searchParams }: { searchParams: SP }) {
+  await notFoundInReviewMode(); // Razorpay review mode — docs/razorpay-review-mode.md
   const sp = await searchParams;
   const type = typeof sp.type === "string" ? sp.type : undefined;
   const category = typeof sp.category === "string" ? sp.category : undefined;

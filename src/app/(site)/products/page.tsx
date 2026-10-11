@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/site/bits";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { buttonClasses } from "@/components/ui/Button";
 import { getBestForOptions, getCategoriesWithCounts, listProducts, PAGE_SIZE } from "@/server/queries/public";
+import { notFoundInReviewMode } from "@/lib/review-mode";
 
 export const metadata: Metadata = {
   title: "Products",
@@ -18,6 +19,7 @@ type SP = Promise<Record<string, string | string[] | undefined>>;
 const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) ?? "";
 
 export default async function ProductsPage({ searchParams }: { searchParams: SP }) {
+  await notFoundInReviewMode(); // Razorpay review mode — docs/razorpay-review-mode.md
   const sp = await searchParams;
   const filters = {
     q: one(sp.q).slice(0, 80) || undefined,

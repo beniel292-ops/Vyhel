@@ -53,7 +53,7 @@ export default async function DigitalProductPage({ params }: Props) {
         <Breadcrumbs items={[{ label: "Home", href: "/" }, { label: "Shop", href: "/shop" }, { label: p.name }]} />
       </div>
       <div className="container-page grid gap-10 pb-16 pt-6 lg:grid-cols-[1.1fr_1fr] lg:gap-16">
-        <EditorialImage src={p.imageUrl} alt={p.imageAlt} name={p.name} priority className="aspect-[4/3] w-full border border-line-soft lg:aspect-[5/4]" sizes="(min-width:1024px) 50vw, 100vw" label="Digital download" />
+        <EditorialImage src={p.imageUrl} alt={p.imageAlt} name={p.name} priority className="aspect-square w-full border border-line-soft lg:aspect-[5/4]" sizes="(min-width:1024px) 50vw, 100vw" label="Digital download" fit="contain" />
         <div className="lg:pt-4">
           <p className="eyebrow !text-accent">Sold by Vyhel · Digital download</p>
           <h1 className="display mt-4 text-[2.5rem] text-ink md:text-[3.25rem]">{p.name}</h1>
@@ -83,6 +83,14 @@ export default async function DigitalProductPage({ params }: Props) {
               ✓ Questions? See our <Link href="/delivery-policy" className="underline underline-offset-2">delivery</Link> and{" "}
               <Link href="/refund-policy" className="underline underline-offset-2">refund</Link> policies
             </li>
+            {settings.contactEmail ? (
+              <li>
+                ✓ Support:{" "}
+                <a href={`mailto:${settings.contactEmail}`} className="underline underline-offset-2">
+                  {settings.contactEmail}
+                </a>
+              </li>
+            ) : null}
           </ul>
         </div>
       </div>

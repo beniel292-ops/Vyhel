@@ -1,6 +1,7 @@
 import { siteBaseUrl } from "@/lib/utils";
 import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
+import { REVIEW_COPY } from "@/lib/review-mode";
 import { getSettings } from "@/lib/settings";
 import "./globals.css";
 
@@ -22,16 +23,19 @@ const instrument = localFont({
 
 export async function generateMetadata(): Promise<Metadata> {
   const s = await getSettings();
+  // Razorpay review mode (docs/razorpay-review-mode.md): describe the digital-products business only.
+  const title = s.reviewMode ? REVIEW_COPY.title : s.seoDefaultTitle;
+  const description = s.reviewMode ? REVIEW_COPY.description : s.seoDefaultDescription;
   return {
     metadataBase: new URL(siteBaseUrl()),
-    title: { default: s.seoDefaultTitle, template: `%s — ${s.siteName}` },
-    description: s.seoDefaultDescription,
+    title: { default: title, template: `%s — ${s.siteName}` },
+    description,
     applicationName: s.siteName,
     openGraph: {
       type: "website",
       siteName: s.siteName,
-      title: s.seoDefaultTitle,
-      description: s.seoDefaultDescription,
+      title,
+      description,
       locale: "en_IN",
       ...(s.defaultOgImage ? { images: [s.defaultOgImage] } : {}),
     },

@@ -18,6 +18,16 @@ export type SiteSettings = {
   googleAnalyticsId: string;
   searchConsoleVerification: string;
   problems: ProblemCard[];
+  /**
+   * RAZORPAY REVIEW MODE (see docs/razorpay-review-mode.md). When true, the public site shows only
+   * Vyhel's own digital products; every affiliate page, listing, search result and public API
+   * response is hidden server-side. Nothing is deleted — turn it off to restore the affiliate site.
+   */
+  reviewMode: boolean;
+  /** Optional business details shown on Contact / footer when filled in (never invented). */
+  legalName: string;
+  supportPhone: string;
+  businessAddress: string;
 };
 
 export const DEFAULT_SETTINGS: SiteSettings = {
@@ -36,6 +46,10 @@ export const DEFAULT_SETTINGS: SiteSettings = {
   amazonAssociateId: "",
   amazonMarketplace: "amazon.in",
   defaultCtaText: "Buy on Amazon",
+  reviewMode: false,
+  legalName: "",
+  supportPhone: "",
+  businessAddress: "",
   googleAnalyticsId: "",
   searchConsoleVerification: "",
   problems: [

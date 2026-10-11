@@ -23,6 +23,13 @@ export default async function AdminHome() {
         description="Here's where things stand."
       />
 
+      {settings.reviewMode ? (
+        <p className="mb-6 rounded-md border border-warn/30 bg-warn-soft px-3 py-2 text-xs leading-relaxed text-warn">
+          <strong>Digital-products review mode is ON.</strong> Visitors only see the Shop; affiliate products, guides, collections and
+          categories return 404 publicly but are all still here. Turn it off in <Link href="/admin/settings" className="underline">Settings</Link>.
+        </p>
+      ) : null}
+
       <div className="mb-8 flex flex-wrap gap-2">
         <Link href="/admin/digital-products/new" className={buttonClasses("primary", "md")}>
           <PlusIcon size={15} /> Add Digital Product

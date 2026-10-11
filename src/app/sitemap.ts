@@ -1,4 +1,5 @@
 import type { MetadataRoute } from "next";
+import { isReviewMode } from "@/lib/review-mode";
 import { absoluteUrl } from "@/lib/utils";
 import { getSitemapEntries } from "@/server/queries/public";
 import { listPublicDigitalProducts } from "@/server/services/digital-products";
@@ -7,8 +8,11 @@ export const revalidate = 3600;
 
 /** Published content only. Drafts, archived items, admin and API routes are never listed. */
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  const [e, shop] = await Promise.all([getSitemapEntries(), listPublicDigitalProducts(500)]);
-  const statics = ["/", "/products", "/guides", "/collections", "/categories", "/about", "/contact", "/privacy", "/terms", "/affiliate-disclosure", "/shop", "/refund-policy", "/delivery-policy"];
+  const [e, shop, review] = await Promise.all([getSitemapEntries(), listPublicDigitalProducts(500), isReviewMode()]);
+  // In Razorpay review mode (docs/razorpay-review-mode.md) affiliate pages 404, so they're left out here too.
+  const statics = review
+    ? ["/", "/shop", "/about", "/contact", "/privacy", "/terms", "/refund-policy", "/delivery-policy"]
+    : ["/", "/products", "/guides", "/collections", "/categories", "/about", "/contact", "/privacy", "/terms", "/affiliate-disclosure", "/shop", "/refund-policy", "/delivery-policy"];
   return [
     ...statics.map((p) => ({ url: absoluteUrl(p), changeFrequency: "weekly" as const, priority: p === "/" ? 1 : 0.6 })),
     ...shop.map((p) => ({ url: absoluteUrl(`/shop/${p.slug}`), priority: 0.8 })),

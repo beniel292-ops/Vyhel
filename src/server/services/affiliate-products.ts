@@ -5,6 +5,7 @@ import { inspectAffiliateLink } from "@/lib/amazon";
 import { audit } from "@/lib/audit";
 import type { SessionUser } from "@/lib/auth/session";
 import { slugify } from "@/lib/utils";
+import { isReviewMode } from "@/lib/review-mode";
 import { categoryExists } from "./categories";
 
 /**
@@ -56,6 +57,7 @@ export function merchantName(merchant: string, label?: string | null) {
 /** The public affiliate shape — what /api/affiliate-products returns. */
 export async function listPublicAffiliateProducts(f: { category?: string; limit?: number } = {}) {
   if (!isDatabaseConfigured()) return [];
+  if (await isReviewMode()) return []; // Razorpay review mode: docs/razorpay-review-mode.md
   const where: SQL[] = [eq(products.status, "published")];
   if (f.category) where.push(eq(categories.slug, f.category));
   const rows = await getDb()

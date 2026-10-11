@@ -5,12 +5,14 @@ import { PageHeader } from "@/components/site/bits";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SearchIcon } from "@/components/ui/icons";
 import { searchAll } from "@/server/queries/public";
+import { notFoundInReviewMode } from "@/lib/review-mode";
 
 export const metadata: Metadata = { title: "Search", robots: { index: false, follow: true } };
 
 type SP = Promise<Record<string, string | string[] | undefined>>;
 
 export default async function SearchPage({ searchParams }: { searchParams: SP }) {
+  await notFoundInReviewMode(); // Razorpay review mode — docs/razorpay-review-mode.md
   const sp = await searchParams;
   const q = (typeof sp.q === "string" ? sp.q : "").trim().slice(0, 80);
   const r = await searchAll(q, 12);

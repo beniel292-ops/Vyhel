@@ -5,6 +5,7 @@ import { JsonLd, breadcrumbLd } from "@/lib/jsonld";
 import { getSettings } from "@/lib/settings";
 import { absoluteUrl } from "@/lib/utils";
 import { getGuideDetail } from "@/server/queries/public";
+import { notFoundInReviewMode } from "@/lib/review-mode";
 
 export const revalidate = 300;
 
@@ -41,6 +42,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 }
 
 export default async function GuidePage({ params }: Props) {
+  await notFoundInReviewMode(); // Razorpay review mode — docs/razorpay-review-mode.md
   const { slug } = await params;
   const [detail, settings] = await Promise.all([getGuideDetail(slug), getSettings()]);
   if (!detail) notFound();

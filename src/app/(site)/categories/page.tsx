@@ -3,6 +3,7 @@ import { CategoryCard } from "@/components/site/Cards";
 import { PageHeader } from "@/components/site/bits";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { getCategoriesWithCounts } from "@/server/queries/public";
+import { notFoundInReviewMode } from "@/lib/review-mode";
 
 export const revalidate = 300;
 export const metadata: Metadata = {
@@ -12,6 +13,7 @@ export const metadata: Metadata = {
 };
 
 export default async function CategoriesPage() {
+  await notFoundInReviewMode(); // Razorpay review mode — docs/razorpay-review-mode.md
   const categories = await getCategoriesWithCounts();
   return (
     <>

@@ -8,8 +8,13 @@ export const metadata: Metadata = { title: "Refund & Cancellation Policy", alter
 export default async function RefundPolicyPage() {
   const s = await getSettings();
   return (
-    <LegalPage eyebrow="Legal" title="Refund & cancellation policy" updated="2026-10-05">
-      <p>This policy covers digital products sold directly by {s.siteName} on our Shop. It does not apply to products you buy from Amazon or other retailers through our recommendations — those purchases are governed by the retailer&rsquo;s own policies.</p>
+    <LegalPage eyebrow="Legal" title="Refund & cancellation policy" updated="2026-10-11">
+      <p>
+        This policy covers digital products sold directly by {s.siteName} on our Shop.
+        {s.reviewMode ? null : (
+          <> It does not apply to products you buy from Amazon or other retailers through our recommendations — those purchases are governed by the retailer&rsquo;s own policies.</>
+        )}
+      </p>
       <h2>Digital products</h2>
       <p>Because digital products are delivered instantly and can&rsquo;t be returned, all sales are generally final once the download link has been delivered.</p>
       <p>We will refund your payment in full if:</p>

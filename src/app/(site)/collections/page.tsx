@@ -3,6 +3,7 @@ import { CollectionCard } from "@/components/site/Cards";
 import { PageHeader } from "@/components/site/bits";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { listCollections } from "@/server/queries/public";
+import { notFoundInReviewMode } from "@/lib/review-mode";
 
 export const revalidate = 300;
 export const metadata: Metadata = {
@@ -12,6 +13,7 @@ export const metadata: Metadata = {
 };
 
 export default async function CollectionsPage() {
+  await notFoundInReviewMode(); // Razorpay review mode — docs/razorpay-review-mode.md
   const collections = await listCollections();
   return (
     <>

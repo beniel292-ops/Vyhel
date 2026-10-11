@@ -2,11 +2,13 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import { LegalPage } from "@/components/site/LegalPage";
 import { getSettings } from "@/lib/settings";
+import { notFoundInReviewMode } from "@/lib/review-mode";
 
 export const revalidate = 3600;
 export const metadata: Metadata = { title: "Affiliate Disclosure", alternates: { canonical: "/affiliate-disclosure" } };
 
 export default async function AffiliateDisclosurePage() {
+  await notFoundInReviewMode(); // Razorpay review mode — docs/razorpay-review-mode.md
   const s = await getSettings();
   return (
     <LegalPage eyebrow="Legal" title="Affiliate disclosure" updated="2026-10-04">

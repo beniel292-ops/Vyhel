@@ -18,7 +18,7 @@ export async function saveSettings(_prev: ActionState, fd: FormData): Promise<Ac
     const textKeys = [
       "siteName", "tagline", "description", "contactEmail", "instagramUrl", "youtubeUrl", "seoDefaultTitle",
       "seoDefaultDescription", "defaultOgImage", "affiliateDisclosure", "amazonAssociateId", "amazonMarketplace",
-      "defaultCtaText", "googleAnalyticsId", "searchConsoleVerification",
+      "defaultCtaText", "googleAnalyticsId", "searchConsoleVerification", "legalName", "supportPhone", "businessAddress",
     ] as const;
     for (const k of textKeys) if (fd.has(k)) s[k] = str(fd, k);
 
@@ -32,6 +32,9 @@ export async function saveSettings(_prev: ActionState, fd: FormData): Promise<Ac
       errors.affiliateDisclosure = 'Amazon requires the statement "As an Amazon Associate I earn from qualifying purchases." (or equivalent).';
     }
     if (!s.siteName) errors.siteName = "Required.";
+    if (s.supportPhone && !/^\+?[0-9][0-9 ()-]{6,20}$/.test(s.supportPhone)) errors.supportPhone = "Use digits, spaces and an optional +, e.g. +91 98765 43210.";
+    // Razorpay review mode (docs/razorpay-review-mode.md): checkbox, only touched when its section was submitted.
+    if (fd.has("__reviewMode")) s.reviewMode = fd.get("reviewMode") === "on";
     if (!s.defaultCtaText) s.defaultCtaText = DEFAULT_SETTINGS.defaultCtaText;
 
     if (fd.has("__problems")) {

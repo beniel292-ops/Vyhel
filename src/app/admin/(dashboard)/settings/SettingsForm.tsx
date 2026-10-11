@@ -1,6 +1,6 @@
 "use client";
 
-import { AdminForm, FormSection, SubmitButton, TextArea, TextField } from "@/components/admin/form";
+import { AdminForm, Checkbox, FormSection, SubmitButton, TextArea, TextField } from "@/components/admin/form";
 import type { SiteSettings } from "@/lib/settings-shape";
 import { saveSettings } from "@/server/actions/settings";
 
@@ -8,6 +8,19 @@ export function SettingsForm({ s }: { s: SiteSettings }) {
   const problems = [...s.problems, ...Array.from({ length: Math.max(0, 6 - s.problems.length) }, () => ({ title: "", description: "", href: "" }))].slice(0, 6);
   return (
     <AdminForm action={saveSettings} className="grid gap-6">
+      <FormSection
+        title="Digital-products review mode"
+        description="Temporary switch for payment-gateway review. Hides the whole affiliate side of the public site (products, guides, collections, categories, search, affiliate disclosure) so visitors see only the Vyhel shop. Nothing is deleted — untick it to restore everything. See docs/razorpay-review-mode.md."
+      >
+        <input type="hidden" name="__reviewMode" value="1" />
+        <Checkbox
+          label="Review mode: show only digital products publicly"
+          name="reviewMode"
+          defaultChecked={s.reviewMode}
+          hint={s.reviewMode ? "ON — affiliate pages currently return 404 for visitors. Admin access is unchanged." : "OFF — the full affiliate site is public."}
+        />
+      </FormSection>
+
       <FormSection title="Brand">
         <div className="grid gap-4 sm:grid-cols-2">
           <TextField label="Site name" name="siteName" defaultValue={s.siteName} required />
@@ -53,6 +66,12 @@ export function SettingsForm({ s }: { s: SiteSettings }) {
           <TextField label="Instagram URL" name="instagramUrl" defaultValue={s.instagramUrl} />
           <TextField label="YouTube URL" name="youtubeUrl" defaultValue={s.youtubeUrl} />
         </div>
+        <p className="text-xs text-muted">Business details below appear on the Contact page and in the footer when filled in. Payment gateways usually ask for them. Leave blank anything you don&rsquo;t want public.</p>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <TextField label="Business / legal name" name="legalName" defaultValue={s.legalName} placeholder="e.g. your name or registered business name" />
+          <TextField label="Support phone" name="supportPhone" defaultValue={s.supportPhone} placeholder="+91 …" />
+        </div>
+        <TextArea label="Business address" name="businessAddress" rows={2} defaultValue={s.businessAddress} placeholder="Address you operate from (city, state, PIN)" />
       </FormSection>
 
       <div className="flex justify-end">

@@ -6,7 +6,7 @@
  *
  *   RAZORPAY_KEY_ID=rzp_test_e2e RAZORPAY_KEY_SECRET=e2e_secret RAZORPAY_WEBHOOK_SECRET=e2e_whsec \
  *   RAZORPAY_API_BASE=http://localhost:4010 RESEND_API_KEY=re_e2e RESEND_API_BASE=http://localhost:4010 \
- *   ADMIN_EMAIL=admin@example.com npm run build && <same env> npm start
+ *   ADMIN_EMAIL=admin@example.com RESEND_WEBHOOK_SECRET=whsec_ZTJlLXJlc2VuZC13aHNlYw== npm run build && <same env> npm start
  *
  *   npm run test:e2e            (uses DATABASE_URL from .env.local, BASE_URL defaults to http://localhost:3000)
  *
@@ -25,12 +25,14 @@ const WEBHOOK_SECRET = "e2e_whsec";
 const sql = postgres(process.env.DATABASE_URL_UNPOOLED ?? process.env.DATABASE_URL!, { max: 1, prepare: false });
 
 /* ----------------------------------------------------------- mock server */
-type Email = { to: string[]; subject: string; html: string; text: string };
+type Email = { id: string; to: string[]; from: string; subject: string; html: string; text: string };
 const mock = {
   orders: new Map<string, { id: string; amount: number; currency: string }>(),
   payments: new Map<string, { id: string; order_id: string; amount: number; currency: string; status: string }>(),
   emails: [] as Email[],
   failEmails: false,
+  /** Recipients Resend refuses the way it does in testing mode (unverified sender domain). */
+  rejectRecipients: new Set<string>(),
   failCapture: false,
   captures: 0,
 };
@@ -67,8 +69,13 @@ const server = http.createServer((req, res) => {
     }
     if (req.method === "POST" && url === "/emails") {
       if (mock.failEmails) return send(500, { message: "mock outage" });
-      mock.emails.push(JSON.parse(body));
-      return send(200, { id: `email_${mock.emails.length}` });
+      const mail = JSON.parse(body);
+      if (mail.to.some((t: string) => mock.rejectRecipients.has(t))) {
+        return send(403, { statusCode: 403, name: "validation_error", message: "You can only send testing emails to your own email address (owner@example.com). To send emails to other recipients, please verify a domain at resend.com/domains, and change the `from` address to an email using this domain." });
+      }
+      const id = `email_${randomBytes(6).toString("hex")}`;
+      mock.emails.push({ ...mail, id });
+      return send(200, { id });
     }
     send(404, {});
   });
@@ -380,7 +387,7 @@ async function main() {
     await step("gating 5: invalid signature → no fulfilment", async () => {
       const c = await startOrder("badsig@example.com");
       const p = pay({ id: c.razorpay.orderId, amount: c.razorpay.amount, currency: c.razorpay.currency });
-      const { res } = await api("/api/payments/razorpay/verify", { method: "POST", json: { razorpay_order_id: p.order_id, razorpay_payment_id: p.id, razorpay_signature: sigFor(p.order_id, p.id).replace(/.$/, "0") } });
+      const { res } = await api("/api/payments/razorpay/verify", { method: "POST", json: { razorpay_order_id: p.order_id, razorpay_payment_id: p.id, razorpay_signature: sigFor(p.order_id, p.id).replace(/.$/, (ch) => (ch === "0" ? "1" : "0")) } });
       assert.equal(res.status, 400);
       await assertNothingDelivered(c.orderId, "badsig@example.com");
     });
@@ -478,6 +485,129 @@ async function main() {
       await waitFor(async () => (customerEmails("second@example.com").length ? true : null));
       assert.match(customerEmails("second@example.com")[0].subject, new RegExp(`E2E Second ${runId}`));
       await sql`update digital_products set status = 'archived' where slug = ${`${slug}-b`}`;
+    });
+
+
+    /* ============ CUSTOMER DELIVERY: admin notification ≠ customer email ============ */
+    const RESEND_WHSEC = "whsec_ZTJlLXJlc2VuZC13aHNlYw==";
+    const resendEvent = (type: string, emailId: string) => {
+      const raw = JSON.stringify({ type, created_at: new Date().toISOString(), data: { email_id: emailId } });
+      const id = `msg_${randomBytes(5).toString("hex")}`;
+      const ts = String(Math.floor(Date.now() / 1000));
+      const sig = createHmac("sha256", Buffer.from(RESEND_WHSEC.slice(6), "base64")).update(`${id}.${ts}.${raw}`).digest("base64");
+      return api("/api/email/resend/webhook", { method: "POST", body: raw, headers: { "content-type": "application/json", "svix-id": id, "svix-timestamp": ts, "svix-signature": `v1,${sig}` }, noOrigin: true });
+    };
+    const adminEmails = () => mock.emails.filter((e) => e.to.includes("admin@example.com"));
+    const activeEmailedTokens = async (id: string) =>
+      (await sql`select count(*)::int n from digital_download_tokens where order_id = ${id} and reason in ('email','resend') and revoked_at is null`)[0].n as number;
+    const attemptsFor = async (id: string) => sql`select attempt, trigger, status, provider_message_id, error from digital_delivery_attempts where order_id = ${id} order by attempt`;
+    const resend = (id: string) => api(`/api/digital-orders/${id}/resend`, { method: "POST", json: {}, auth: true });
+    const restricted = { orderId: "", email: "restricted-buyer@example.com" };
+
+    await step("delivery 1: admin notification succeeds while Resend rejects the customer → paid, delivery failed, no live link", async () => {
+      const c = await startOrder(restricted.email);
+      restricted.orderId = c.orderId;
+      mock.rejectRecipients.add(restricted.email);
+      const adminBefore = adminEmails().length;
+      const p = pay({ id: c.razorpay.orderId, amount: c.razorpay.amount, currency: c.razorpay.currency });
+      assert.equal((await verifyPay(p)).res.status, 200);
+      const o = await orderRow(c.orderId);
+      assert.equal(o.payment_status, "paid", "payment state is independent of email");
+      assert.equal(o.delivery_status, "failed");
+      assert.match(o.last_delivery_error, /verified domain/);
+      assert.doesNotMatch(o.last_delivery_error, /@/, "no addresses in stored errors");
+      assert.equal(customerEmails(restricted.email).length, 0);
+      assert.equal(adminEmails().length, adminBefore + 1, "admin was notified (separately)");
+      assert.match(adminEmails().at(-1)!.text + adminEmails().at(-1)!.html, /failed/i, "admin notification reports the failed delivery");
+      assert.equal(await activeEmailedTokens(c.orderId), 0, "the undelivered link was revoked");
+      const a = await attemptsFor(c.orderId);
+      assert.equal(a.length, 1);
+      assert.equal(a[0].status, "failed");
+      assert.equal(a[0].provider_message_id, null);
+    });
+
+    await step("delivery 2+3+4: admin retry re-confirms the payment, sends to the persisted address, records the message id — no new order or payment", async () => {
+      mock.rejectRecipients.delete(restricted.email);
+      const ordersBefore = (await sql`select count(*)::int n from digital_orders`)[0].n;
+      const rzpOrdersBefore = mock.orders.size;
+      const paymentsBefore = mock.payments.size;
+      const adminBefore = adminEmails().length;
+      const r = await resend(restricted.orderId);
+      assert.equal(r.res.status, 200, JSON.stringify(r.data));
+      const sent = customerEmails(restricted.email);
+      assert.equal(sent.length, 1);
+      const o = await orderRow(restricted.orderId);
+      assert.deepEqual(sent[0].to, [o.customer_email], "sent to the address persisted on the order");
+      assert.ok(!sent[0].to.includes("admin@example.com"));
+      assert.equal(adminEmails().length, adminBefore, "a retry does not send another admin notification");
+      assert.equal(o.payment_status, "paid");
+      assert.equal(o.delivery_status, "sent");
+      assert.equal(o.last_delivery_error, null);
+      const a = await attemptsFor(restricted.orderId);
+      assert.equal(a.length, 2);
+      assert.equal(a[1].status, "accepted");
+      assert.equal(a[1].trigger, "resend");
+      assert.equal(a[1].provider_message_id, sent[0].id, "Resend message id recorded");
+      assert.equal(await activeEmailedTokens(restricted.orderId), 1);
+      assert.equal((await sql`select count(*)::int n from digital_orders`)[0].n, ordersBefore, "no new order");
+      assert.equal(mock.orders.size, rzpOrdersBefore, "no new Razorpay order");
+      assert.equal(mock.payments.size, paymentsBefore, "no new payment");
+    });
+
+    await step("delivery 5: concurrent/duplicate retries never leave more than one live emailed link", async () => {
+      const before = customerEmails(restricted.email).length;
+      const rs = await Promise.all([1, 2, 3].map(() => resend(restricted.orderId)));
+      const codes = rs.map((r) => r.res.status);
+      assert.ok(codes.every((c) => c === 200 || c === 409), codes.join(","));
+      const ok = codes.filter((c) => c === 200).length;
+      assert.ok(ok >= 1);
+      assert.equal(customerEmails(restricted.email).length - before, ok, "one email per accepted retry, none for refused ones");
+      assert.equal(await activeEmailedTokens(restricted.orderId), 1, "no duplicate entitlements");
+      assert.equal((await orderRow(restricted.orderId)).delivery_status, "sent");
+    });
+
+    await step("delivery 6: unpaid, refunded or failed-at-Razorpay orders cannot be retried", async () => {
+      const unpaid = await startOrder("retry-unpaid@example.com");
+      const r1 = await resend(unpaid.orderId);
+      assert.equal(r1.res.status, 409);
+      assert.equal(await tokenCount(unpaid.orderId), 0);
+      assert.equal(customerEmails("retry-unpaid@example.com").length, 0);
+      // Paid in our DB, but Razorpay now reports it refunded → refused before any email or token.
+      const c = await startOrder("retry-refunded@example.com");
+      const p = pay({ id: c.razorpay.orderId, amount: c.razorpay.amount, currency: c.razorpay.currency });
+      assert.equal((await verifyPay(p)).res.status, 200);
+      await waitFor(async () => (customerEmails("retry-refunded@example.com").length ? true : null));
+      const tokensBefore = await tokenCount(c.orderId);
+      mock.payments.get(p.id)!.status = "refunded";
+      const r2 = await resend(c.orderId);
+      assert.equal(r2.res.status, 409, JSON.stringify(r2.data));
+      assert.match(r2.data.error, /refunded/);
+      assert.equal(customerEmails("retry-refunded@example.com").length, 1, "no extra email");
+      assert.equal(await tokenCount(c.orderId), tokensBefore, "no new link");
+    });
+
+    await step("delivery 7: a Resend bounce marks delivery failed (payment untouched); stale or out-of-order events never undo a newer success", async () => {
+      const bad = await resendEvent("email.bounced", "em_unsigned");
+      assert.equal(bad.data.handled, false, "unknown message ids are ignored");
+      const forged = await api("/api/email/resend/webhook", { method: "POST", body: "{}", headers: { "svix-id": "x", "svix-timestamp": String(Math.floor(Date.now() / 1000)), "svix-signature": "v1,AAAA" }, noOrigin: true });
+      assert.equal(forged.res.status, 401);
+      const latest = customerEmails(restricted.email).at(-1)!;
+      assert.equal((await resendEvent("email.bounced", latest.id)).res.status, 200);
+      let o = await orderRow(restricted.orderId);
+      assert.equal(o.payment_status, "paid");
+      assert.equal(o.delivery_status, "failed");
+      assert.match(o.last_delivery_error, /bounced/);
+      await resendEvent("email.delivered", latest.id); // late, out of order
+      assert.equal((await orderRow(restricted.orderId)).delivery_status, "failed", "a bounce is final");
+      await new Promise((r) => setTimeout(r, 50));
+      assert.equal((await resend(restricted.orderId)).res.status, 200);
+      const newest = customerEmails(restricted.email).at(-1)!;
+      await resendEvent("email.delivered", newest.id);
+      await resendEvent("email.bounced", customerEmails(restricted.email)[0].id); // an older message bouncing late
+      o = await orderRow(restricted.orderId);
+      assert.equal(o.delivery_status, "sent", "an old attempt can't downgrade a newer successful one");
+      const a = await attemptsFor(restricted.orderId);
+      assert.equal(a.at(-1)!.status, "delivered");
     });
 
     await step("inactive digital products cannot be bought", async () => {

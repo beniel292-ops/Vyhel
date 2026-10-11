@@ -28,6 +28,8 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
         <p className="mb-4 rounded-md border border-warn/30 bg-warn-soft px-4 py-3 text-sm text-warn">
           Email isn&rsquo;t configured (RESEND_API_KEY). Payments still work, but download emails will show as failed until it&rsquo;s set — then use &ldquo;Resend email&rdquo;.
         </p>
+      ) : mail.senderIssue ? (
+        <p className="mb-4 rounded-md border border-warn/30 bg-warn-soft px-4 py-3 text-sm text-warn">{mail.senderIssue}</p>
       ) : null}
       <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat label="Revenue · 30 days" value={formatMoney(summary.revenueMinor)} />

@@ -43,6 +43,13 @@
       "when": 1791434475814,
       "tag": "0005_order_integrity_checks",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791741166671,
+      "tag": "0006_delivery_attempts",
+      "breakpoints": true
     }
   ]
 }

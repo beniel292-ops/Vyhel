@@ -582,6 +582,31 @@ export const paymentEvents = pgTable("payment_events", {
   createdAt: ts("created_at").notNull().defaultNow(),
 });
 
+/**
+ * One row per customer download-email attempt (never the admin notification). Kept separate from
+ * digital_orders so payment state and email state can't be confused, and so a missing table can
+ * never break checkout. No email addresses or tokens are stored here.
+ */
+export const digitalDeliveryAttempts = pgTable(
+  "digital_delivery_attempts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => digitalOrders.id, { onDelete: "cascade" }),
+    attempt: integer("attempt").notNull(),
+    trigger: text("trigger").notNull(),
+    provider: text("provider").notNull().default("resend"),
+    providerMessageId: text("provider_message_id").unique(),
+    /** accepted → delivered | bounced | complained | delayed; or failed (provider refused it). */
+    status: text("status").notNull(),
+    error: text("error"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [index("digital_delivery_attempts_order_idx").on(t.orderId, t.createdAt)],
+);
+
 export type DigitalProduct = typeof digitalProducts.$inferSelect;
 export type DigitalOrder = typeof digitalOrders.$inferSelect;
 export type DigitalFile = typeof digitalFiles.$inferSelect;

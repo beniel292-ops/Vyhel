@@ -91,7 +91,8 @@ export async function resendOrderEmail(_prev: ActionState, fd: FormData): Promis
   try {
     const user = await assertUser("admin");
     const r = await resendDelivery(user, str(fd, "id"), opt(fd, "email"));
-    return r.sent ? success("Download email sent.") : fail(`Email failed: ${r.error ?? "unknown error"}. Check RESEND_API_KEY / EMAIL_FROM.`);
+    if (r.sent) return success("Download email accepted by Resend for the customer's address.");
+    return fail(r.skipped ? (r.error ?? "Another delivery attempt is in progress.") : `Email failed: ${r.error ?? "unknown error"}`);
   } catch (err) {
     if (err instanceof CheckoutError) return fail(err.message, err.field ? { [err.field]: err.message } : undefined);
     return handleError(err);

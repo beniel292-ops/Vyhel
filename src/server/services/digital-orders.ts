@@ -4,7 +4,7 @@ import { and, desc, eq, gt, ilike, inArray, isNull, lt, or, sql, type SQL } from
 import { getDb, schema } from "@/db";
 import { audit } from "@/lib/audit";
 import type { SessionUser } from "@/lib/auth/session";
-import { emailConfig, sendEmail } from "@/lib/email/resend";
+import { emailConfig, redactEmails, sendEmail } from "@/lib/email/resend";
 import { purchaseEmail } from "@/lib/email/templates";
 import { EMAIL_RE, formatMoney } from "@/lib/money";
 import { notifyAdminOfSale } from "@/lib/notify";
@@ -320,49 +320,104 @@ export async function issueDownloadToken(orderId: string, reason: string, opts: 
   return token;
 }
 
+/** An attempt younger than this is treated as still in flight (blocks concurrent sends). */
+const DELIVERY_IN_FLIGHT_MS = 120_000;
+/** Tokens that were emailed to the customer (the success-page "checkout" token is separate). */
+const EMAILED_TOKEN_REASONS = ["email", "resend"];
+
+/** Best-effort audit row per customer-delivery attempt; never breaks delivery if it can't be written. */
+async function recordDeliveryAttempt(row: { orderId: string; attempt: number; trigger: string; ok: boolean; messageId: string | null; error: string | null }) {
+  try {
+    await getDb().insert(schema.digitalDeliveryAttempts).values({
+      orderId: row.orderId,
+      attempt: row.attempt,
+      trigger: row.trigger,
+      providerMessageId: row.messageId,
+      status: row.ok ? "accepted" : "failed",
+      error: row.error,
+    });
+  } catch (err) {
+    console.warn("[delivery] could not record attempt", err instanceof Error ? err.message : err);
+  }
+}
+
 /**
- * Sends (or re-sends) the delivery email. `force` is for admin resends; otherwise a delivery
- * already sent — or attempted in the last 2 minutes by a concurrent request — is skipped.
+ * Sends (or re-sends) the CUSTOMER download email to the address stored on the order.
+ * - Only for paid orders, and never while another attempt for the same order is in flight
+ *   (the claim below is a single conditional UPDATE, so concurrent callers can't both send).
+ * - `force` (admin resend) may re-send an already-sent order; automatic paths never do.
+ * - "sent" means Resend accepted the message and returned its id; a later bounce is reconciled by the
+ *   Resend webhook. Payment state is never changed here.
+ * - At most one emailed link stays active: a failed attempt's token is revoked immediately, and a
+ *   successful one revokes the previously emailed links.
  */
 export async function fulfilOrder(orderId: string, opts: { notifyAdmin: boolean; force?: boolean; reason?: string }) {
   const db = getDb();
+  const stale = new Date(Date.now() - DELIVERY_IN_FLIGHT_MS);
   const claimWhere = opts.force
-    ? eq(digitalOrders.id, orderId)
+    ? and(
+        eq(digitalOrders.id, orderId),
+        eq(digitalOrders.paymentStatus, "paid"),
+        or(sql`${digitalOrders.deliveryStatus} <> 'pending'`, isNull(digitalOrders.lastDeliveryAt), lt(digitalOrders.lastDeliveryAt, stale)),
+      )
     : and(
         eq(digitalOrders.id, orderId),
         eq(digitalOrders.paymentStatus, "paid"),
         sql`${digitalOrders.deliveryStatus} <> 'sent'`,
-        or(isNull(digitalOrders.lastDeliveryAt), lt(digitalOrders.lastDeliveryAt, new Date(Date.now() - 120_000))),
+        or(isNull(digitalOrders.lastDeliveryAt), lt(digitalOrders.lastDeliveryAt, stale)),
       );
   const [order] = await db
     .update(digitalOrders)
-    .set({ deliveryAttempts: sql`${digitalOrders.deliveryAttempts} + 1`, lastDeliveryAt: new Date(), updatedAt: new Date() })
+    .set({ deliveryStatus: "pending", deliveryAttempts: sql`${digitalOrders.deliveryAttempts} + 1`, lastDeliveryAt: new Date(), updatedAt: new Date() })
     .where(claimWhere)
     .returning();
-  if (!order || order.paymentStatus !== "paid") return { sent: false, skipped: true as const };
+  if (!order || order.paymentStatus !== "paid") {
+    return { sent: false, skipped: true as const, error: "Another delivery attempt for this order is in progress. Try again in a couple of minutes.", messageId: null };
+  }
 
-  const settings = await getSettings();
-  const token = await issueDownloadToken(order.id, opts.reason ?? "email");
-  const expiresAt = new Date(Date.now() + DOWNLOAD_TTL_DAYS * 86400_000);
-  const mail = purchaseEmail({
-    customerName: order.customerName,
-    productName: order.productName,
-    orderId: order.id,
-    amount: formatMoney(order.amountMinor, order.currency),
-    paidAt: order.paidAt ?? new Date(),
-    downloadUrl: absoluteUrl(`/download/${token}`),
-    expiresAt,
-    maxDownloads: DOWNLOAD_MAX,
-    supportEmail: settings.contactEmail || emailConfig().adminEmail,
-    siteUrl: absoluteUrl("/"),
-  });
-  const result = await sendEmail({
-    to: order.customerEmail,
-    ...mail,
-    replyTo: settings.contactEmail || emailConfig().adminEmail,
-    idempotencyKey: `delivery-${order.id}-${order.deliveryAttempts}`,
-    tags: [{ name: "type", value: "digital_delivery" }],
-  });
+  const trigger = opts.reason ?? "email";
+  let result: Awaited<ReturnType<typeof sendEmail>>;
+  let token: string | null = null;
+  try {
+    const settings = await getSettings();
+    token = await issueDownloadToken(order.id, trigger);
+    const expiresAt = new Date(Date.now() + DOWNLOAD_TTL_DAYS * 86400_000);
+    const mail = purchaseEmail({
+      customerName: order.customerName,
+      productName: order.productName,
+      orderId: order.id,
+      amount: formatMoney(order.amountMinor, order.currency),
+      paidAt: order.paidAt ?? new Date(),
+      downloadUrl: absoluteUrl(`/download/${token}`),
+      expiresAt,
+      maxDownloads: DOWNLOAD_MAX,
+      supportEmail: settings.contactEmail || emailConfig().adminEmail,
+      siteUrl: absoluteUrl("/"),
+    });
+    result = await sendEmail({
+      // Always the address persisted on the order — never the admin address.
+      to: order.customerEmail,
+      ...mail,
+      replyTo: settings.contactEmail || emailConfig().adminEmail,
+      idempotencyKey: `delivery-${order.id}-${order.deliveryAttempts}`,
+      tags: [{ name: "type", value: "digital_delivery" }],
+    });
+  } catch (err) {
+    result = { ok: false, error: redactEmails(err instanceof Error ? err.message : "Delivery failed") };
+  }
+
+  if (token) {
+    const keep = hash(token);
+    if (result.ok) {
+      await db
+        .update(digitalDownloadTokens)
+        .set({ revokedAt: new Date() })
+        .where(and(eq(digitalDownloadTokens.orderId, order.id), inArray(digitalDownloadTokens.reason, EMAILED_TOKEN_REASONS), isNull(digitalDownloadTokens.revokedAt), sql`${digitalDownloadTokens.tokenHash} <> ${keep}`));
+    } else {
+      // The customer never received this link — it must not stay usable.
+      await db.update(digitalDownloadTokens).set({ revokedAt: new Date() }).where(eq(digitalDownloadTokens.tokenHash, keep));
+    }
+  }
 
   const [after] = await db
     .update(digitalOrders)
@@ -373,9 +428,18 @@ export async function fulfilOrder(orderId: string, opts: { notifyAdmin: boolean;
     })
     .where(eq(digitalOrders.id, order.id))
     .returning();
-  if (!result.ok) console.error(`[delivery] email failed for order ${order.id}: ${result.error}`);
+  await recordDeliveryAttempt({
+    orderId: order.id,
+    attempt: order.deliveryAttempts,
+    trigger,
+    ok: result.ok,
+    messageId: result.ok ? result.id : null,
+    error: result.ok ? null : result.error.slice(0, 300),
+  });
+  if (!result.ok) console.error(`[delivery] customer email failed for order ${order.id}: ${result.error}`);
 
   if (opts.notifyAdmin) {
+    // Separate email to ADMIN_EMAIL; its success says nothing about the customer email above.
     await notifyAdminOfSale({
       productName: after.productName,
       customerEmail: after.customerEmail,
@@ -388,15 +452,31 @@ export async function fulfilOrder(orderId: string, opts: { notifyAdmin: boolean;
       adminUrl: absoluteUrl(`/admin/orders/${after.id}`),
     });
   }
-  return { sent: result.ok, skipped: false as const, error: result.ok ? null : result.error };
+  return { sent: result.ok, skipped: false as const, error: result.ok ? null : result.error, messageId: result.ok ? result.id : null };
 }
 
-/** Admin action: resend the download email, optionally to a corrected address. Never creates an order. */
+/**
+ * Admin action: re-send the download email for an existing order, optionally to a corrected address.
+ * Never creates an order or a payment. Before sending, Razorpay must confirm (again) that this order's
+ * payment is captured for the right order, amount and currency — a refunded or disputed payment is refused.
+ */
 export async function resendDelivery(user: SessionUser, orderId: string, newEmail?: string | null) {
   const db = getDb();
   const [order] = await db.select().from(digitalOrders).where(eq(digitalOrders.id, orderId));
   if (!order) throw new CheckoutError("Order not found.", 404);
-  if (order.paymentStatus !== "paid") throw new CheckoutError("Only paid orders can be delivered.", 409);
+  if (order.paymentStatus !== "paid" || !order.razorpayPaymentId) throw new CheckoutError("Only paid orders can be delivered.", 409);
+  const cfg = getRazorpayConfig();
+  if (!cfg) throw new CheckoutError("Razorpay isn't configured, so the payment can't be re-confirmed before sending.", 503);
+  let payment: Awaited<ReturnType<typeof fetchPayment>>;
+  try {
+    payment = await fetchPayment(cfg, order.razorpayPaymentId);
+  } catch {
+    throw new CheckoutError("Couldn't reach Razorpay to re-confirm this payment. Nothing was sent — try again shortly.", 502);
+  }
+  if (!capturedFor(payment, order)) {
+    throw new CheckoutError(`Razorpay reports this payment as "${payment.status}" (or it doesn't match this order), so the download can't be sent.`, 409);
+  }
+
   const email = newEmail?.trim().toLowerCase();
   if (email && email !== order.customerEmail) {
     if (!EMAIL_RE.test(email)) throw new CheckoutError("Enter a valid email address.", 400, "email");
@@ -409,8 +489,61 @@ export async function resendDelivery(user: SessionUser, orderId: string, newEmai
     await audit(user, "digital_order", orderId, "change_email", `${order.customerEmail} → ${email}`);
   }
   const r = await fulfilOrder(orderId, { notifyAdmin: false, force: true, reason: "resend" });
-  await audit(user, "digital_order", orderId, r.sent ? "resend_delivery" : "resend_delivery_failed", r.error ?? undefined);
+  await audit(
+    user,
+    "digital_order",
+    orderId,
+    r.sent ? "resend_delivery" : "resend_delivery_failed",
+    r.sent ? `resend message ${r.messageId}` : (r.error ?? undefined),
+  );
   return r;
+}
+
+/** Resend event → attempt status. Final states are never overwritten by earlier-stage events (events can arrive out of order). */
+const EMAIL_EVENT_STATUS: Record<string, { status: string; rank: number; failsDelivery?: boolean }> = {
+  "email.delivery_delayed": { status: "delayed", rank: 1 },
+  "email.delivered": { status: "delivered", rank: 2 },
+  "email.complained": { status: "complained", rank: 3 },
+  "email.bounced": { status: "bounced", rank: 3, failsDelivery: true },
+  "email.failed": { status: "failed", rank: 3, failsDelivery: true },
+};
+const STATUS_RANK: Record<string, number> = { accepted: 0, delayed: 1, delivered: 2, complained: 3, bounced: 3, failed: 3 };
+
+/** Applies a verified Resend webhook event to the matching customer-delivery attempt. Idempotent. */
+export async function applyEmailEvent(messageId: string, type: string) {
+  const mapped = EMAIL_EVENT_STATUS[type];
+  if (!mapped) return { handled: false as const, reason: "event not tracked" };
+  const db = getDb();
+  const { digitalDeliveryAttempts } = schema;
+  const [attempt] = await db.select().from(digitalDeliveryAttempts).where(eq(digitalDeliveryAttempts.providerMessageId, messageId));
+  if (!attempt) return { handled: false as const, reason: "not a customer delivery email" };
+  if ((STATUS_RANK[attempt.status] ?? 0) >= mapped.rank && attempt.status !== "accepted") {
+    return { handled: true as const, changed: false };
+  }
+  await db
+    .update(digitalDeliveryAttempts)
+    .set({ status: mapped.status, error: mapped.failsDelivery ? `Resend reported ${type}` : attempt.error, updatedAt: new Date() })
+    .where(eq(digitalDeliveryAttempts.id, attempt.id));
+  if (mapped.failsDelivery) {
+    // Only the latest attempt decides the order's delivery state; a newer successful resend wins.
+    const [latest] = await db
+      .select({ id: digitalDeliveryAttempts.id })
+      .from(digitalDeliveryAttempts)
+      .where(eq(digitalDeliveryAttempts.orderId, attempt.orderId))
+      .orderBy(desc(digitalDeliveryAttempts.attempt), desc(digitalDeliveryAttempts.createdAt))
+      .limit(1);
+    if (latest?.id === attempt.id) {
+      await db
+        .update(digitalOrders)
+        .set({
+          deliveryStatus: "failed",
+          lastDeliveryError: type === "email.bounced" ? "The customer's mail server rejected the email (bounced). Check the address, then resend." : "Resend could not deliver the email. Check the address, then resend.",
+          updatedAt: new Date(),
+        })
+        .where(and(eq(digitalOrders.id, attempt.orderId), eq(digitalOrders.deliveryStatus, "sent")));
+    }
+  }
+  return { handled: true as const, changed: true };
 }
 
 /* ------------------------------------------------------------ downloads */
@@ -528,7 +661,14 @@ export async function adminGetOrder(id: string) {
     .from(digitalDownloadTokens)
     .where(eq(digitalDownloadTokens.orderId, id))
     .orderBy(desc(digitalDownloadTokens.createdAt));
-  return { order, tokens };
+  // Tolerates the table not existing yet (code deployed before the migration ran).
+  const attempts = await db
+    .select()
+    .from(schema.digitalDeliveryAttempts)
+    .where(eq(schema.digitalDeliveryAttempts.orderId, id))
+    .orderBy(desc(schema.digitalDeliveryAttempts.createdAt))
+    .catch(() => null);
+  return { order, tokens, attempts };
 }
 
 export async function digitalSalesSummary(days = 30) {

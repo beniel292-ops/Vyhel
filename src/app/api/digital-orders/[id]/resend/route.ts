@@ -13,7 +13,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   try {
     const r = await resendDelivery(user, id, typeof body.email === "string" ? body.email : null);
     revalidatePath("/admin/orders");
-    return json({ sent: r.sent, error: r.error ?? null }, r.sent ? 200 : 502);
+    return json({ sent: r.sent, error: r.error ?? null }, r.sent ? 200 : r.skipped ? 409 : 502);
   } catch (err) {
     if (err instanceof CheckoutError) return json({ error: err.message }, err.status);
     throw err;
